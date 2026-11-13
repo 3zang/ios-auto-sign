@@ -1,0 +1,100 @@
+name: Build and Release
+
+# Release assets are compiled from this repository's source by GitHub Actions.
+# No prebuilt binary is ever uploaded from a developer machine.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (for example v1.0.0). Created at the selected commit if it does not exist.'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Verify, cross-compile and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Verify source
+        run: |
+          set -euo pipefail
+          go version
+          go vet ./...
+          go test ./...
+
+      - name: Cross-compile from source
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          LDFLAGS='-s -w'
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o dist/ios-auto-sign-windows-amd64.exe ./cmd/server
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64  go build -trimpath -ldflags "$LDFLAGS" -o dist/ios-auto-sign-linux-amd64       ./cmd/server
+          CGO_ENABLED=0 GOOS=linux   GOARCH=arm64  go build -trimpath -ldflags "$LDFLAGS" -o dist/ios-auto-sign-linux-arm64       ./cmd/server
+          (cd dist && sha256sum ios-auto-sign-* > SHA256SUMS.txt)
+          file dist/ios-auto-sign-*
+          ls -lh dist
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${INPUT_TAG}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::No release tag was provided"
+            exit 1
+          fi
+
+          printf '%s\n' \
+            '# 自动构建说明' \
+            '' \
+            '本 Release 中的可执行文件全部由 GitHub Actions 从仓库源码交叉编译生成，不包含任何本地上传的二进制。' \
+            '构建流程见 `.github/workflows/release.yml`：go vet → go test → 交叉编译 → 发布资产。' \
+            '' \
+            '| 资产 | 平台 |' \
+            '| --- | --- |' \
+            '| `ios-auto-sign-windows-amd64.exe` | Windows amd64 |' \
+            '| `ios-auto-sign-linux-amd64` | Linux amd64 |' \
+            '| `ios-auto-sign-linux-arm64` | Linux arm64 |' \
+            '| `SHA256SUMS.txt` | 以上二进制的 SHA256 校验和 |' \
+            '' \
+            '签名功能仍需自行放置 zsign 可执行文件（`bin/zsign` 或 `bin/zsign.exe`），详见 README。' \
+            > RELEASE_NOTES.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists: replacing its assets with this source build"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --target "$GITHUB_SHA" \
+              --title "ios-auto-sign $TAG" \
+              --notes-file RELEASE_NOTES.md
+          fi
+
+          echo "--- published assets ---"
+          gh release view "$TAG" --json assets --jq '.assets[].name'

@@ -20,6 +20,7 @@
 - [HTTP API](#http-api)
 - [数据存储与安全](#数据存储与安全)
 - [多平台编译](#多平台编译)
+- [Release 与自动化构建](#release-与自动化构建)
 - [部署建议](#部署建议)
 - [常见问题](#常见问题)
 - [已知限制](#已知限制)
@@ -119,6 +120,8 @@ HTTP 层在**每次请求时**根据当前 `Host` / `X-Forwarded-Host` / `X-Forw
 │           ├── app.js / style.css / theme.js
 │           ├── qrcode.js         # 离线二维码库
 │           └── favicon.svg
+├── .github/workflows/
+│   └── release.yml               # 从源码编译并发布 Release 资产
 ├── config.example.json           # 配置模板
 ├── go.mod
 └── README.md
@@ -144,10 +147,10 @@ bin/
 
 ### 1. 获取程序
 
-可以直接使用 Release 中的预编译二进制，或从源码构建：
+可以直接使用 [Releases](https://github.com/3zang/ios-auto-sign/releases) 中的预编译二进制（**全部由 GitHub Actions 从仓库源码编译**，见「Release 与自动化构建」），或从源码构建：
 
 ```bash
-git clone https://github.com/<your-account>/ios-auto-sign.git
+git clone https://github.com/3zang/ios-auto-sign.git
 cd ios-auto-sign
 go build -trimpath -ldflags "-s -w" -o ios-auto-sign ./cmd/server
 ```
@@ -419,6 +422,40 @@ go vet ./...
 go test ./...
 node --check internal/web/static/app.js
 ```
+
+---
+
+## Release 与自动化构建
+
+**Release 中的可执行文件不是本地上传的**，而是由 [`.github/workflows/release.yml`](.github/workflows/release.yml) 在 GitHub 托管的 `ubuntu-latest` runner 上，从该 tag 对应的源码现场编译：
+
+1. `actions/checkout@v4` 拉取源码（含 tag）。
+2. `actions/setup-go@v5` 安装 Go 1.22。
+3. `go vet ./...` 与 `go test ./...`，任一失败即中止，不会发布半成品。
+4. 以 `CGO_ENABLED=0` 交叉编译三个平台，并生成 `SHA256SUMS.txt`。
+5. 用 `gh release create` 发布刚编译出的 `dist/` 资产；若 Release 已存在则改为 `gh release upload --clobber` 覆盖同名资产。
+
+| 资产 | 平台 |
+| --- | --- |
+| `ios-auto-sign-windows-amd64.exe` | Windows amd64 |
+| `ios-auto-sign-linux-amd64` | Linux amd64 |
+| `ios-auto-sign-linux-arm64` | Linux arm64 |
+| `SHA256SUMS.txt` | 以上二进制的 SHA256 校验和 |
+
+### 触发方式
+
+- **推送 tag（推荐）**：`git tag v1.0.1 && git push origin v1.0.1`。匹配 `v*` 的 tag 会自动创建同名 Release 并附带上述资产。
+- **手动运行**：Actions 页选择 `Build and Release` → `Run workflow`，填写 `tag`（例如 `v1.0.0`）。tag 不存在时会在所选提交上创建，Release 已存在时则只替换资产。
+
+> 工作流已声明 `permissions: contents: write`。若组织 / 仓库把 `GITHUB_TOKEN` 限制为只读，请在 `Settings → Actions → General → Workflow permissions` 调整为 **Read and write permissions**。
+
+### 校验下载
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+本地 `dist/` 与 `*.exe` 等编译产物均被 `.gitignore` 忽略，**不会进入仓库，也不会被上传到 Release**；上面的手动交叉编译命令仅用于开发验证。
 
 ---
 
