@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const DefaultSourceURL = "https://raw.githubusercontent.com/braless/soft_collections/main/all-apps.json"
+const DefaultSourceURL = "https://raw.githubusercontent.com/bebound/AltGallery/refs/heads/master/all-apps.json"
 
 type PlistConfig struct {
 	// Mode is "builtin" or "plistserver".
