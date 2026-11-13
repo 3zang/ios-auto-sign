@@ -186,6 +186,19 @@ button:disabled { opacity: .5; cursor: default; transform: none; }
 .theme-switch[aria-checked="true"] .theme-switch-track { background: var(--blue); border-color: var(--blue); }
 .theme-switch[aria-checked="true"] .theme-switch-thumb { transform: translateX(18px); }
 
+/* Language switch: compact pill next to the theme toggle */
+.lang-switch {
+  flex: 0 0 auto; min-width: 44px; height: 28px; padding: 0 11px;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--surface-solid); color: var(--text-secondary);
+  font-size: 12px; font-weight: 700; letter-spacing: .02em; line-height: 1;
+  box-shadow: none;
+}
+.lang-switch:hover { border-color: var(--blue); color: var(--blue); background: var(--surface-solid); }
+.auth-lang-row { display: flex; justify-content: center; margin-top: 16px; }
+.auth-lang-row .lang-switch { min-width: 56px; height: 30px; }
+.head-actions { display: inline-flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+
 /* panel header with a right-hand action */
 .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
 .panel-head h2 { margin-bottom: 0; }

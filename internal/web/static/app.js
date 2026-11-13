@@ -9,7 +9,14 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
-  function fmtTime(t) { if (!t) return '-'; try { return new Date(t).toLocaleString('zh-CN'); } catch (e) { return String(t); } }
+  function tr(s) { return window.IASI18N ? window.IASI18N.t(s) : s; }
+  function fmtTime(t) {
+    if (!t) return '-';
+    try {
+      var locale = window.IASI18N && window.IASI18N.lang === 'en' ? 'en-US' : 'zh-CN';
+      return new Date(t).toLocaleString(locale);
+    } catch (e) { return String(t); }
+  }
   function fmtSize(n) { return n ? (n / 1048576).toFixed(1) + ' MB' : '-'; }
 
   async function api(path, opts) {
@@ -40,11 +47,14 @@
 
   function applySiteTitle(title) {
     var t = String(title || '').trim() || 'iOS 自动签名';
+    // tr() translates the default brand name but leaves a custom (user-owned)
+    // title untouched, since it is data rather than UI copy.
+    var shown = tr(t);
     var el = $('#site-title');
-    if (el) el.textContent = t;
+    if (el) el.textContent = shown;
     var authTitle = $('#auth-view h1');
-    if (authTitle) authTitle.textContent = t;
-    document.title = t + ' · 控制台';
+    if (authTitle) authTitle.textContent = shown;
+    document.title = tr(t + ' · 控制台');
   }
 
   // One form, two fields: a segmented control switches between login and
@@ -145,7 +155,7 @@
 
   function renderSources(list) {
     var rows = list.map(function (s) {
-      return '<tr><td><b>' + esc(s.name) + '</b></td>' +
+      return '<tr><td data-i18n-skip><b>' + esc(s.name) + '</b></td>' +
         '<td class="mono source-url" title="' + esc(s.url) + '">' + esc(s.url) + '</td>' +
         '<td class="status-cell">' + (s.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag">停用</span>') + '</td>' +
         '<td>' + s.interval_minutes + ' 分钟</td>' +
@@ -231,7 +241,7 @@
       var icon = a.icon_url ? '<img src="' + esc(a.icon_url) + '" alt="">' : '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">';
       var src = c.icon_source || 'original';
       return '<div class="card">' +
-        '<div class="card-head">' + icon + '<div><div class="name">' + esc(a.name) + '</div>' +
+        '<div class="card-head">' + icon + '<div><div class="name" data-i18n-skip>' + esc(a.name) + '</div>' +
           '<div class="sub mono">' + esc(a.bundle_id) + '</div>' +
           '<div class="sub">' + (latest ? '版本 ' + esc(latest.version) + ' · ' + esc(latest.date) : '暂无版本') + '</div></div></div>' +
         '<div class="card-body">' +
@@ -336,7 +346,7 @@
         ? '<button class="icon-thumb-btn" type="button" data-icon-preview="' + esc(i.id) + '" title="预览图标">' +
             '<img class="icon-thumb" src="' + esc(i.url) + '" alt="预览 ' + esc(i.label || '') + '"></button>'
         : '<span class="muted">-</span>';
-      return '<tr><td>' + thumb + '</td><td>' + esc(i.label || '-') + '</td>' +
+      return '<tr><td>' + thumb + '</td><td data-i18n-skip>' + esc(i.label || '-') + '</td>' +
         '<td class="mono">' + esc(i.url) + '</td>' +
         '<td class="status-cell">' + (i.enabled ? '<span class="tag ok">可用</span>' : '<span class="tag">停用</span>') + '</td>' +
         '<td>' + (admin ? '<button class="danger" data-action="delete-icon" data-id="' + esc(i.id) + '">删除</button>' : '') + '</td></tr>';
@@ -383,7 +393,7 @@
   loaders.certs = async function () {
     var list = await api('/api/certificates');
     var rows = list.map(function (c) {
-      return '<tr><td>' + esc(c.name) + '</td>' +
+      return '<tr><td data-i18n-skip>' + esc(c.name) + '</td>' +
         '<td>' + (c.has_provision ? '<span class="tag ok">三件套完整</span>' : '<span class="tag err">缺描述文件</span>') + '</td>' +
         '<td>' + esc(fmtTime(c.created_at)) + '</td>' +
         '<td><button class="danger" data-action="delete-cert" data-id="' + esc(c.id) + '">删除</button></td></tr>';
@@ -430,7 +440,7 @@
         '<td class="mono">' + esc(j.error || '-') + '</td></tr>';
     }).join('');
     var arows = arts.map(function (a) {
-      return '<tr><td>' + esc(a.display_name || a.bundle_id) + '</td><td>' + esc(a.version) + '</td>' +
+      return '<tr><td data-i18n-skip>' + esc(a.display_name || a.bundle_id) + '</td><td>' + esc(a.version) + '</td>' +
         '<td>' + esc(fmtTime(a.created_at)) + '</td><td>' + esc(fmtSize(a.size)) + '</td>' +
         '<td><a class="link" href="/ipa/' + esc(a.id) + '.ipa">下载</a></td></tr>';
     }).join('');
@@ -518,7 +528,7 @@
       var icon = a.icon_url ? '<img src="' + esc(a.icon_url) + '" alt="">'
         : '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">';
       return '<div class="card">' +
-        '<div class="card-head">' + icon + '<div><div class="name">' + esc(a.name) + '</div>' +
+        '<div class="card-head">' + icon + '<div><div class="name" data-i18n-skip>' + esc(a.name) + '</div>' +
           '<div class="sub mono">' + esc(a.bundle_id) + '</div></div></div>' +
         '<div class="install-meta">' +
           '<div>版本 <b>' + esc(a.version) + '</b></div>' +
@@ -692,7 +702,7 @@
           break;
         }
         case 'delete-source':
-          if (!confirm('删除该订阅源及其元数据？')) return;
+          if (!confirm(tr('删除该订阅源及其元数据？'))) return;
           await api('/api/sources/' + encodeURIComponent(id), { method: 'DELETE' });
           await loaders.sources();
           break;
@@ -706,7 +716,7 @@
           await loaders.icons();
           break;
         case 'delete-cert':
-          if (!confirm('删除该证书？已签名的应用不受影响。')) return;
+          if (!confirm(tr('删除该证书？已签名的应用不受影响。'))) return;
           await api('/api/certificates/' + encodeURIComponent(id), { method: 'DELETE' });
           await loaders.certs();
           break;
@@ -730,7 +740,8 @@
     }
     $('#auth-view').hidden = true;
     $('#app').hidden = false;
-    $('#who').textContent = me.username + ' · ' + me.role;
+    // Only the account name is shown; repeating the role produced "admin · admin".
+    $('#who').textContent = me.username;
     try { pub = await api('/api/config/public'); } catch (e) { pub = {}; }
     applySiteTitle(pub.site_title);
     $('#logout').onclick = async function () {
@@ -740,6 +751,13 @@
     $$('.tab').forEach(function (b) {
       b.onclick = function () { switchTab(b.dataset.tab); };
     });
-    await switchTab('overview');
+    var initialTab = 'overview';
+    try {
+      var remembered = sessionStorage.getItem('ias-active-tab');
+      if (remembered && $$('.tab').some(function (b) { return b.dataset.tab === remembered; })) {
+        initialTab = remembered;
+      }
+    } catch (e) { /* storage may be unavailable */ }
+    await switchTab(initialTab);
   })();
 })();

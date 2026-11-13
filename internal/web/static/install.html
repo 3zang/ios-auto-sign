@@ -8,6 +8,7 @@
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/theme.js"></script>
+<script src="/static/i18n.js"></script>
 <style>
   .wrap { position: relative; z-index: 1; max-width: 980px; margin: 0 auto; padding: 48px 20px 64px; }
   .page-head { margin-bottom: 28px; }
@@ -44,9 +45,12 @@
         <span class="brand-mark" aria-hidden="true"><img src="/static/favicon.svg" alt="" width="32" height="32"></span>
         <p class="section-kicker">READY TO INSTALL</p>
       </div>
-      <button class="theme-switch" type="button" role="switch" aria-checked="false" aria-label="切换深色模式" title="切换深色模式">
-        <span class="theme-switch-track"><span class="theme-switch-thumb"></span></span>
-      </button>
+      <div class="head-actions">
+        <button class="lang-switch" type="button" data-i18n-skip aria-label="Switch to English">EN</button>
+        <button class="theme-switch" type="button" role="switch" aria-checked="false" aria-label="切换深色模式" title="切换深色模式">
+          <span class="theme-switch-track"><span class="theme-switch-thumb"></span></span>
+        </button>
+      </div>
     </div>
     <h1>应用安装</h1>
     <span class="muted">请在 iOS 设备的 Safari 中打开本页；仅显示当前登录账号可安装的应用。</span>
@@ -79,11 +83,17 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
     return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
   }); }
-  function fmtTime(t) { try { return new Date(t).toLocaleString('zh-CN'); } catch (e) { return t || ''; } }
+  function tr(s) { return window.IASI18N ? window.IASI18N.t(s) : s; }
+  function fmtTime(t) {
+    try {
+      var locale = window.IASI18N && window.IASI18N.lang === 'en' ? 'en-US' : 'zh-CN';
+      return new Date(t).toLocaleString(locale);
+    } catch (e) { return t || ''; }
+  }
   function fmtSize(n) { return n ? (n / 1048576).toFixed(1) + ' MB' : '-'; }
 
   function makeQr(text) {
-    if (typeof window.qrcode !== 'function') throw new Error('二维码组件未加载');
+    if (typeof window.qrcode !== 'function') throw new Error(tr('二维码组件未加载'));
     var lib = window.qrcode;
     if (lib.stringToBytesFuncs && lib.stringToBytesFuncs['UTF-8']) {
       lib.stringToBytes = lib.stringToBytesFuncs['UTF-8'];
@@ -115,7 +125,7 @@
 
   function openQr(app) {
     try { $('#qrImage').src = makeQr(app.install_url || ''); }
-    catch (e) { alert(e.message); return; }
+    catch (e) { alert(tr(e.message)); return; }
     $('#qrImage').alt = (app.name || '应用') + ' 的安装二维码';
     $('#qrAppName').textContent = app.name || '';
     $('#qrAppVersion').textContent = '版本 ' + (app.version || '-');
@@ -145,7 +155,7 @@
       var icon = a.icon_url ? '<img class="app-icon" src="' + esc(a.icon_url) + '" alt="">'
                            : '<img class="app-icon" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">';
       return '<div class="card">' +
-        '<div class="card-head">' + icon + '<div><div class="app-title">' + esc(a.name) + '</div>' +
+        '<div class="card-head">' + icon + '<div><div class="app-title" data-i18n-skip>' + esc(a.name) + '</div>' +
           '<div class="app-line mono">' + esc(a.bundle_id) + '</div></div></div>' +
         '<div class="install-meta">' +
           '<div>版本 <b>' + esc(a.version) + '</b></div>' +

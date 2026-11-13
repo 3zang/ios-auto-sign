@@ -8,6 +8,7 @@
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/theme.js"></script>
+<script src="/static/i18n.js"></script>
 </head>
 <body>
 <div class="ambient ambient-one" aria-hidden="true"></div>
@@ -17,7 +18,7 @@
   <div class="auth-card">
     <img class="auth-logo" src="/static/favicon.svg" alt="" width="56" height="56" aria-hidden="true">
     <p class="section-kicker">LOCAL OTA SIGNING</p>
-    <h1>iOS 自动签名</h1>
+    <h1 data-i18n-skip>iOS 自动签名</h1>
     <p class="auth-subtitle">签名、分发，一站式控制台</p>
     <div class="auth-seg" role="tablist" aria-label="账号操作">
       <button type="button" data-mode="login" class="active" role="tab">登录</button>
@@ -30,6 +31,7 @@
       <button id="auth-submit" type="submit" class="primary">登录</button>
     </form>
     <p class="auth-foot">请在 iOS 设备的 Safari 中打开安装页完成安装</p>
+    <div class="auth-lang-row"><button class="lang-switch" type="button" data-i18n-skip>EN</button></div>
   </div>
 </div>
 
@@ -37,10 +39,11 @@
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"><img src="/static/favicon.svg" alt="" width="30" height="30"></span>
-      <span class="brand-copy"><span id="site-title">iOS 自动签名</span><small>LOCAL OTA SIGNING</small></span>
+      <span class="brand-copy"><span id="site-title" data-i18n-skip>iOS 自动签名</span><small>LOCAL OTA SIGNING</small></span>
     </div>
     <div class="spacer"></div>
-    <span id="who" class="muted"></span>
+    <span id="who" class="muted" data-i18n-skip></span>
+    <button class="lang-switch" id="langToggle" type="button" data-i18n-skip aria-label="Switch to English">EN</button>
     <button class="theme-switch" id="themeToggle" type="button" role="switch" aria-checked="false" aria-label="切换深色模式" title="切换深色模式">
       <span class="theme-switch-track"><span class="theme-switch-thumb"></span></span>
     </button>
@@ -75,7 +78,7 @@
     <p class="section-kicker">SCAN TO INSTALL</p>
     <h2 id="qrDialogTitle">扫码安装</h2>
     <div class="qr-frame"><img id="qrImage" alt="安装二维码" width="280" height="280"></div>
-    <h3 id="qrAppName"></h3>
+    <h3 id="qrAppName" data-i18n-skip></h3>
     <p class="qr-version" id="qrAppVersion"></p>
     <p class="qr-hint">使用 iPhone 相机扫描二维码，在打开的提示中确认安装。二维码内容为该应用的 OTA 安装链接。</p>
     <button class="button button-secondary" id="qrCopyLink" type="button">复制安装链接</button>
@@ -89,8 +92,8 @@
     <p class="section-kicker">ICON PREVIEW</p>
     <h2 id="iconDialogTitle">图标预览</h2>
     <img id="iconPreviewImage" alt="图标预览" width="180" height="180">
-    <h3 id="iconPreviewName"></h3>
-    <p class="icon-preview-url mono" id="iconPreviewUrl"></p>
+    <h3 id="iconPreviewName" data-i18n-skip></h3>
+    <p class="icon-preview-url mono" id="iconPreviewUrl" data-i18n-skip></p>
     <a class="button button-secondary" id="iconOpenLink" href="#" target="_blank" rel="noopener">打开原图</a>
   </div>
 </dialog>
