@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f5f7">
+<title>应用安装</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/theme.js"></script>
+<style>
+  .wrap { position: relative; z-index: 1; max-width: 980px; margin: 0 auto; padding: 48px 20px 64px; }
+  .page-head { margin-bottom: 28px; }
+  .head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .head-brand { display: inline-flex; align-items: center; gap: 10px; }
+  .head-brand .brand-mark { width: 32px; height: 32px; }
+  .head-row .section-kicker { margin: 0; }
+  .page-head h1 { font-size: 32px; margin-top: 6px; }
+  .page-head .muted { display: block; margin-top: 8px; }
+  .app-icon { width: 72px; height: 72px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 18px; background: var(--surface-muted); box-shadow: 0 12px 26px rgba(0, 0, 0, .1); object-fit: cover; }
+  .app-title { font-size: 20px; font-weight: 650; letter-spacing: -.025em; }
+  .app-line { color: var(--text-secondary); font-size: 13px; }
+  .install-meta { margin: 18px 0; }
+  .foot { margin-top: 28px; color: var(--text-tertiary); font-size: 12px; line-height: 1.6; }
+  @media (min-width: 1024px) {
+    .wrap { width: 60vw; min-width: 560px; max-width: none; }
+  }
+  @media (max-width: 700px) {
+    .wrap { padding: 24px 16px 48px; }
+    .page-head h1 { font-size: 25px; }
+    .app-icon { width: 58px; height: 58px; border-radius: 15px; }
+    .install-actions .button { flex: 1 1 auto; }
+  }
+</style>
+</head>
+<body>
+<div class="ambient ambient-one" aria-hidden="true"></div>
+<div class="ambient ambient-two" aria-hidden="true"></div>
+
+<div class="wrap">
+  <header class="page-head">
+    <div class="head-row">
+      <div class="head-brand">
+        <span class="brand-mark" aria-hidden="true"><img src="/static/favicon.svg" alt="" width="32" height="32"></span>
+        <p class="section-kicker">READY TO INSTALL</p>
+      </div>
+      <button class="theme-switch" type="button" role="switch" aria-checked="false" aria-label="切换深色模式" title="切换深色模式">
+        <span class="theme-switch-track"><span class="theme-switch-thumb"></span></span>
+      </button>
+    </div>
+    <h1>应用安装</h1>
+    <span class="muted">请在 iOS 设备的 Safari 中打开本页；仅显示当前登录账号可安装的应用。</span>
+  </header>
+  <div id="grid" class="card-grid"></div>
+  <div id="empty" class="empty-state" hidden>暂无可安装的应用。请先在控制台勾选应用、上传证书并等待签名任务完成。</div>
+  <div id="login-required" class="empty-state" hidden>安装数据已按账号隔离，请先<a class="link" href="/">登录控制台</a>后再打开本页。</div>
+  <p class="foot">安装链接使用 itms-services 协议，请在 iOS 设备的 Safari 中打开；桌面浏览器点击不会触发安装。</p>
+</div>
+
+<dialog class="qr-dialog" id="qrDialog" aria-labelledby="qrDialogTitle">
+  <div class="dialog-glow" aria-hidden="true"></div>
+  <button class="dialog-close" id="closeQrButton" type="button" aria-label="关闭二维码">×</button>
+  <div class="qr-dialog-content">
+    <p class="section-kicker">SCAN TO INSTALL</p>
+    <h2 id="qrDialogTitle">扫码安装</h2>
+    <div class="qr-frame"><img id="qrImage" alt="安装二维码" width="280" height="280"></div>
+    <h3 id="qrAppName"></h3>
+    <p class="qr-version" id="qrAppVersion"></p>
+    <p class="qr-hint">使用 iPhone 相机扫描二维码，在打开的提示中确认安装。</p>
+    <button class="button button-secondary" id="qrCopyLink" type="button">复制安装链接</button>
+  </div>
+</dialog>
+
+<script src="/static/qrcode.js"></script>
+<script>
+(function () {
+  var $ = function (s) { return document.querySelector(s); };
+  var grid = $('#grid');
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  }); }
+  function fmtTime(t) { try { return new Date(t).toLocaleString('zh-CN'); } catch (e) { return t || ''; } }
+  function fmtSize(n) { return n ? (n / 1048576).toFixed(1) + ' MB' : '-'; }
+
+  function makeQr(text) {
+    if (typeof window.qrcode !== 'function') throw new Error('二维码组件未加载');
+    var lib = window.qrcode;
+    if (lib.stringToBytesFuncs && lib.stringToBytesFuncs['UTF-8']) {
+      lib.stringToBytes = lib.stringToBytesFuncs['UTF-8'];
+    }
+    var qr = lib(0, 'M');
+    qr.addData(text, 'Byte');
+    qr.make();
+    var n = qr.getModuleCount(), scale = 6, margin = 4;
+    var size = (n + margin * 2) * scale;
+    var canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#1d1d1f';
+    for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) {
+      if (qr.isDark(r, c)) ctx.fillRect((c + margin) * scale, (r + margin) * scale, scale, scale);
+    }
+    return canvas.toDataURL('image/png');
+  }
+
+  function closeQr() {
+    var dlg = $('#qrDialog');
+    if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+    else dlg.removeAttribute('open');
+  }
+  $('#closeQrButton').onclick = closeQr;
+  $('#qrDialog').addEventListener('click', function (e) { if (e.target === $('#qrDialog')) closeQr(); });
+
+  function openQr(app) {
+    try { $('#qrImage').src = makeQr(app.install_url || ''); }
+    catch (e) { alert(e.message); return; }
+    $('#qrImage').alt = (app.name || '应用') + ' 的安装二维码';
+    $('#qrAppName').textContent = app.name || '';
+    $('#qrAppVersion').textContent = '版本 ' + (app.version || '-');
+    $('#qrCopyLink').onclick = function () {
+      var ta = document.createElement('textarea');
+      ta.value = app.install_url || '';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+      document.body.removeChild(ta);
+      $('#qrCopyLink').textContent = '已复制链接';
+      setTimeout(function () { $('#qrCopyLink').textContent = '复制安装链接'; }, 1800);
+    };
+    var dlg = $('#qrDialog');
+    if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
+    else dlg.setAttribute('open', '');
+  }
+
+  fetch('/api/install/apps').then(function (r) {
+    if (r.status === 401) { $('#login-required').hidden = false; return null; }
+    return r.json();
+  }).then(function (list) {
+    if (!list) return;
+    if (!Array.isArray(list) || !list.length) { $('#empty').hidden = false; return; }
+    list.sort(function (a, b) { return new Date(b.updated_at) - new Date(a.updated_at); });
+    grid.innerHTML = list.map(function (a) {
+      var icon = a.icon_url ? '<img class="app-icon" src="' + esc(a.icon_url) + '" alt="">'
+                           : '<img class="app-icon" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">';
+      return '<div class="card">' +
+        '<div class="card-head">' + icon + '<div><div class="app-title">' + esc(a.name) + '</div>' +
+          '<div class="app-line mono">' + esc(a.bundle_id) + '</div></div></div>' +
+        '<div class="install-meta">' +
+          '<div>版本 <b>' + esc(a.version) + '</b></div>' +
+          '<div>更新时间 <b>' + esc(fmtTime(a.updated_at)) + '</b></div>' +
+          '<div>大小 <b>' + esc(fmtSize(a.size)) + '</b></div>' +
+        '</div>' +
+        '<div class="inline install-actions">' +
+          '<a class="button button-primary" href="' + esc(a.install_url) + '">安装</a>' +
+          '<button class="button button-qr" type="button" data-qr="' + esc(a.id) + '">' +
+            '<span class="qr-mini" aria-hidden="true"></span>二维码</button>' +
+        '</div></div>';
+    }).join('');
+    Array.prototype.forEach.call(grid.querySelectorAll('button[data-qr]'), function (b) {
+      b.onclick = function () {
+        var item = list.find(function (x) { return x.id === b.dataset.qr; });
+        if (item) openQr(item);
+      };
+    });
+  }).catch(function () { $('#empty').hidden = false; });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+/data/
+/bin/zsign
+/bin/zsign.exe
+/bin/*.zip
+/bin/*.tar.gz
+/config.json
+*.tmp
+*.log
+
+# Local build output and session workspace data (never publish)
+/dist/
+/*.exe
+/ios-auto-sign
+/ios-auto-sign-*
+/.workbuddy-ai/

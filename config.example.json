@@ -1,0 +1,22 @@
+{
+  "listen": "127.0.0.1:8080",
+  "public_base_url": "https://sign.example.com",
+  "data_dir": "data",
+  "master_key_file": "master.key",
+  "zsign_path": "bin/zsign",
+  "poll_interval_minutes": 30,
+  "keep_versions": 2,
+  "http_timeout_seconds": 60,
+  "default_source_url": "https://raw.githubusercontent.com/braless/soft_collections/main/all-apps.json",
+  "plist": {
+    "mode": "builtin",
+    "plistserver_url": "http://127.0.0.1:3788",
+    "ipa_base_url": ""
+  },
+  "sign_options": {
+    "zip_level": 9,
+    "force": false,
+    "adhoc": false,
+    "extra_args": []
+  }
+}

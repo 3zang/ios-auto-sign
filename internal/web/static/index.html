@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f5f7">
+<title>iOS 自动签名控制台</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/theme.js"></script>
+</head>
+<body>
+<div class="ambient ambient-one" aria-hidden="true"></div>
+<div class="ambient ambient-two" aria-hidden="true"></div>
+
+<div id="auth-view" class="auth-wrap" hidden>
+  <div class="auth-card">
+    <img class="auth-logo" src="/static/favicon.svg" alt="" width="56" height="56" aria-hidden="true">
+    <p class="section-kicker">LOCAL OTA SIGNING</p>
+    <h1>iOS 自动签名</h1>
+    <p class="auth-subtitle">签名、分发，一站式控制台</p>
+    <div class="auth-seg" role="tablist" aria-label="账号操作">
+      <button type="button" data-mode="login" class="active" role="tab">登录</button>
+      <button type="button" data-mode="register" role="tab">注册</button>
+    </div>
+    <form id="auth-form">
+      <label>用户名<input name="username" autocomplete="username" placeholder="请输入用户名" required></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required></label>
+      <p id="auth-hint" class="auth-hint"></p>
+      <button id="auth-submit" type="submit" class="primary">登录</button>
+    </form>
+    <p class="auth-foot">请在 iOS 设备的 Safari 中打开安装页完成安装</p>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><img src="/static/favicon.svg" alt="" width="30" height="30"></span>
+      <span class="brand-copy"><span id="site-title">iOS 自动签名</span><small>LOCAL OTA SIGNING</small></span>
+    </div>
+    <div class="spacer"></div>
+    <span id="who" class="muted"></span>
+    <button class="theme-switch" id="themeToggle" type="button" role="switch" aria-checked="false" aria-label="切换深色模式" title="切换深色模式">
+      <span class="theme-switch-track"><span class="theme-switch-thumb"></span></span>
+    </button>
+    <button id="logout" class="ghost">退出</button>
+  </header>
+  <nav class="tabs">
+    <button class="tab active" data-tab="overview">概览</button>
+    <button class="tab" data-tab="sources">订阅源</button>
+    <button class="tab" data-tab="apps">应用与配置</button>
+    <button class="tab" data-tab="icons">图标库</button>
+    <button class="tab" data-tab="certs">证书</button>
+    <button class="tab" data-tab="jobs">任务与产物</button>
+    <button class="tab" data-tab="install">安装</button>
+    <button class="tab" data-tab="settings">设置中心</button>
+  </nav>
+  <main>
+    <section class="panel" id="panel-overview"></section>
+    <section class="panel" id="panel-sources" hidden></section>
+    <section class="panel" id="panel-apps" hidden></section>
+    <section class="panel" id="panel-icons" hidden></section>
+    <section class="panel" id="panel-certs" hidden></section>
+    <section class="panel" id="panel-jobs" hidden></section>
+    <section class="panel" id="panel-install" hidden></section>
+    <section class="panel" id="panel-settings" hidden></section>
+  </main>
+</div>
+
+<dialog class="qr-dialog" id="qrDialog" aria-labelledby="qrDialogTitle">
+  <div class="dialog-glow" aria-hidden="true"></div>
+  <button class="dialog-close" id="closeQrButton" type="button" aria-label="关闭二维码">×</button>
+  <div class="qr-dialog-content">
+    <p class="section-kicker">SCAN TO INSTALL</p>
+    <h2 id="qrDialogTitle">扫码安装</h2>
+    <div class="qr-frame"><img id="qrImage" alt="安装二维码" width="280" height="280"></div>
+    <h3 id="qrAppName"></h3>
+    <p class="qr-version" id="qrAppVersion"></p>
+    <p class="qr-hint">使用 iPhone 相机扫描二维码，在打开的提示中确认安装。二维码内容为该应用的 OTA 安装链接。</p>
+    <button class="button button-secondary" id="qrCopyLink" type="button">复制安装链接</button>
+  </div>
+</dialog>
+
+<dialog class="qr-dialog icon-dialog" id="iconDialog" aria-labelledby="iconDialogTitle">
+  <div class="dialog-glow" aria-hidden="true"></div>
+  <button class="dialog-close" id="closeIconButton" type="button" aria-label="关闭预览">×</button>
+  <div class="icon-preview-content">
+    <p class="section-kicker">ICON PREVIEW</p>
+    <h2 id="iconDialogTitle">图标预览</h2>
+    <img id="iconPreviewImage" alt="图标预览" width="180" height="180">
+    <h3 id="iconPreviewName"></h3>
+    <p class="icon-preview-url mono" id="iconPreviewUrl"></p>
+    <a class="button button-secondary" id="iconOpenLink" href="#" target="_blank" rel="noopener">打开原图</a>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/static/qrcode.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
