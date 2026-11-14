@@ -269,7 +269,8 @@
     if (!s.last_checked_at) return tr('待首次检查');
     var last = new Date(s.last_checked_at);
     if (isNaN(last.getTime())) return '—';
-    var interval = s.interval_minutes || pub.poll_minutes || 30;
+    // Honour this user's own interval; fall back to the source default.
+    var interval = s.my_interval || s.interval_minutes || pub.poll_minutes || 30;
     var next = new Date(last.getTime() + interval * 60000);
     return fmtDateTime(next);
   }
@@ -277,14 +278,18 @@
   function renderSources(list) {
     sourcesCache = list;
     var rows = list.map(function (s) {
+      var myInterval = s.my_interval || 0;
+      var effective = myInterval || s.default_interval || s.interval_minutes || pub.poll_minutes || 30;
+      var flag = myInterval ? '<span class="interval-flag mine">' + tr('我的') + '</span>' : '<span class="interval-flag def">' + tr('默认') + '</span>';
       return '<tr><td data-i18n-skip><b>' + esc(s.name) + '</b></td>' +
         '<td class="mono source-url" title="' + esc(s.url) + '">' + esc(s.url) + '</td>' +
         '<td class="status-cell">' + (s.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag">停用</span>') + '</td>' +
-        '<td><div class="stepper" data-id="' + esc(s.id) + '" data-value="' + (s.interval_minutes || 1) + '">' +
+        '<td><div class="stepper" data-id="' + esc(s.id) + '" data-value="' + effective + '">' +
           '<button type="button" class="step-btn" data-step="-1" title="减少" aria-label="减少间隔">−</button>' +
-          '<span class="step-val">' + (s.interval_minutes || 1) + '</span>' +
+          '<span class="step-val">' + effective + '</span>' +
           '<button type="button" class="step-btn" data-step="1" title="增加" aria-label="增加间隔">+</button>' +
           '<span class="step-unit">' + tr('分钟') + '</span>' +
+          ' <button type="button" class="interval-reset" data-id="' + esc(s.id) + '" title="' + tr('恢复为软件源默认间隔') + '">' + flag + '</button>' +
         '</div></td>' +
         '<td>' + esc(fmtTime(s.last_checked_at)) + '</td>' +
         '<td class="mono">' + nextCheckText(s) + '</td>' +
@@ -301,15 +306,15 @@
         '<h2>订阅软件源</h2></div>' +
         '<button class="button button-primary" type="button" data-action="run-sync">立即执行</button>' +
       '</div>' +
-      '<div class="hint" style="margin-bottom:14px">点击「立即执行」会立即检查所有启用的软件源；发现新版本时自动创建签名任务，并推送 Bark 更新通知。</div>' +
+      '<div class="hint" style="margin-bottom:14px">每个账号可独立设置「我的刷新间隔」，互不影响。点击「立即执行」会立即检查所有启用的软件源；发现新版本时自动创建签名任务，并推送 Bark 更新通知。</div>' +
       '<form id="source-form" class="form-row">' +
         '<label>名称<input name="name" placeholder="我的软件源"></label>' +
         '<label class="wide">JSON 地址<input name="url" placeholder="' + esc(pub.default_source) + '" required></label>' +
-        '<label>轮询（分钟）<input name="interval" type="number" min="1" value="' + pub.poll_minutes + '"></label>' +
+        '<label>默认轮询（分钟）<input name="interval" type="number" min="1" value="' + pub.poll_minutes + '"></label>' +
         '<label class="inline"><input name="enabled" type="checkbox" checked> 启用</label>' +
         '<button type="submit" class="primary">添加并同步</button>' +
       '</form>' +
-      '<table><thead><tr><th>名称</th><th>地址</th><th>状态</th><th>间隔</th><th>上次检查</th><th>下次检查</th><th>错误</th><th>操作</th></tr></thead>' +
+      '<table><thead><tr><th>名称</th><th>地址</th><th>状态</th><th>我的刷新间隔</th><th>上次检查</th><th>下次检查</th><th>错误</th><th>操作</th></tr></thead>' +
       '<tbody>' + (rows || '<tr><td colspan="8" class="muted">暂无订阅源</td></tr>') + '</tbody></table>';
 
     $('#source-form').onsubmit = async function (e) {
@@ -332,24 +337,35 @@
         var src = sourcesCache.filter(function (s) { return s.id === id; })[0];
         if (!src) return;
         var cur = parseInt(wrap.getAttribute('data-value'), 10);
-        if (isNaN(cur)) cur = src.interval_minutes || 1;
+        if (isNaN(cur)) cur = src.default_interval || src.interval_minutes || 30;
         var next = cur + parseInt(btn.getAttribute('data-step'), 10);
         if (next < 1) next = 1;
         if (next > 1440) next = 1440;
         wrap.setAttribute('data-value', String(next));
         wrap.querySelector('.step-val').textContent = next;
         try {
-          await api('/api/sources/' + encodeURIComponent(id), json('PUT', {
-            name: src.name, url: src.url, enabled: src.enabled, interval_minutes: next
-          }));
-          src.interval_minutes = next;
+          var res = await api('/api/sources/' + encodeURIComponent(id) + '/interval', json('PUT', { interval_minutes: next }));
+          if (src) src.my_interval = res.my_interval;
           toast(tr('刷新间隔已更新') + '：' + next + ' ' + tr('分钟'));
         } catch (err) {
           wrap.setAttribute('data-value', String(cur));
           wrap.querySelector('.step-val').textContent = cur;
-          if (src) src.interval_minutes = cur;
           fail(err);
         }
+      };
+    });
+
+    $$('#panel-sources .interval-reset').forEach(function (btn) {
+      btn.onclick = async function () {
+        var id = btn.getAttribute('data-id');
+        var src = sourcesCache.filter(function (s) { return s.id === id; })[0];
+        if (!src) return;
+        try {
+          var res = await api('/api/sources/' + encodeURIComponent(id) + '/interval', json('PUT', { interval_minutes: 0 }));
+          if (src) src.my_interval = res.my_interval || 0;
+          toast(tr('已恢复为软件源默认间隔'));
+          await loaders.sources();
+        } catch (err) { fail(err); }
       };
     });
   }
@@ -752,11 +768,30 @@
   };
 
   function renderSettings(st) {
+    // Every signed-in user owns their own Bark target. Site-level settings
+    // (title, version retention) stay administrator-only.
+    var barkHTML =
+      '<div><h3>Bark 更新通知（个人）</h3><p class="settings-note">这是你个人的推送配置，仅对你自己生效，其他账号无法查看或修改。订阅源检测到你已开启签名的应用出现新版本时，会推送通知到你的设备。</p></div>' +
+      '<label class="inline"><input type="checkbox" name="bark_enabled" ' + (st.bark_enabled ? 'checked' : '') + '> 启用 Bark 推送</label>' +
+      '<label>服务器地址<input name="bark_server" value="' + esc(st.bark_server) + '" placeholder="https://api.day.app"></label>' +
+      '<label>设备 Key<input name="bark_key" value="' + esc(st.bark_key) + '" placeholder="Bark 推送地址中最后一段"></label>' +
+      '<label>通知分组（可选）<input name="bark_group" value="' + esc(st.bark_group) + '" placeholder="iOS 自动签名"></label>' +
+      '<label>提示音（可选）<input name="bark_sound" value="' + esc(st.bark_sound) + '" placeholder="default"></label>' +
+      '<label>跳转链接（可选）<input name="bark_url" value="' + esc(st.bark_url) + '" placeholder="点击通知后打开的地址，留空则不携带"></label>';
+
     if (!st.editable) {
       $('#panel-settings').innerHTML =
         '<p class="section-kicker">SETTINGS</p><h2>设置中心</h2>' +
-        '<div class="hint">当前站点标题：<b>' + esc(st.site_title) + '</b>。全局设置（标题、Bark 通知、版本保留）仅管理员可修改。</div>' +
-        '<div class="hint" style="margin-top:14px">当前每应用保留最近 <b>' + (pub.keep_versions || 2) + '</b> 个已签名版本。主题可在右上角的开关随时切换，偏好保存在当前浏览器。</div>';
+        '<div class="hint">当前站点标题：<b>' + esc(st.site_title) + '</b>。全局设置（标题、版本保留）仅管理员可修改；下方的 Bark 通知为你的个人配置。</div>' +
+        '<div class="hint" style="margin-top:14px">当前每应用保留最近 <b>' + (st.keep_versions || pub.keep_versions || 2) + '</b> 个已签名版本。</div>' +
+        '<form id="settings-form" class="stack settings-card">' +
+          barkHTML +
+          '<div class="settings-actions">' +
+            '<button type="submit" class="primary">保存个人通知设置</button>' +
+            '<button type="button" id="bark-test">发送测试推送</button>' +
+          '</div>' +
+        '</form>';
+      wireSettingsForm(st);
       return;
     }
     $('#panel-settings').innerHTML =
@@ -768,38 +803,43 @@
         '<div><h3>' + tr('版本保留') + '</h3><p class="settings-note">' + tr('每个应用最多保留的已签名版本数量；超过后最旧的版本会被自动清理，对应安装入口一并移除。') + '</p></div>' +
         '<label>' + tr('每应用保留版本数') + '<input name="keep_versions" type="number" min="1" max="50" value="' + (st.keep_versions || pub.keep_versions || 2) + '"></label>' +
         '<div class="settings-divider"></div>' +
-        '<div><h3>Bark 更新通知</h3><p class="settings-note">订阅源检测到新版本时，按应用推送一条「软件有更新」通知。首次添加软件源不会推送历史版本。</p></div>' +
-        '<label class="inline"><input type="checkbox" name="bark_enabled" ' + (st.bark_enabled ? 'checked' : '') + '> 启用 Bark 推送</label>' +
-        '<label>服务器地址<input name="bark_server" value="' + esc(st.bark_server) + '" placeholder="https://api.day.app"></label>' +
-        '<label>设备 Key<input name="bark_key" value="' + esc(st.bark_key) + '" placeholder="Bark 推送地址中最后一段"></label>' +
-        '<label>通知分组（可选）<input name="bark_group" value="' + esc(st.bark_group) + '" placeholder="iOS 自动签名"></label>' +
-        '<label>提示音（可选）<input name="bark_sound" value="' + esc(st.bark_sound) + '" placeholder="default"></label>' +
+        barkHTML +
         '<div class="settings-actions">' +
           '<button type="submit" class="primary">保存设置</button>' +
           '<button type="button" id="bark-test">发送测试推送</button>' +
         '</div>' +
       '</form>';
-    $('#settings-form').onsubmit = async function (e) {
+    wireSettingsForm(st);
+  }
+
+  function wireSettingsForm(st) {
+    var form = $('#settings-form');
+    form.onsubmit = async function (e) {
       e.preventDefault();
       var f = e.target;
-      try {
+      var body = {
+        bark_enabled: f.bark_enabled.checked,
+        bark_server: f.bark_server.value,
+        bark_key: f.bark_key.value,
+        bark_group: f.bark_group.value,
+        bark_sound: f.bark_sound.value,
+        bark_url: f.bark_url.value
+      };
+      if (st.editable) {
         var keep = Number(f.keep_versions.value) || 2;
         if (keep < 1) keep = 1;
         if (keep > 50) keep = 50;
-        var out = await api('/api/settings', json('PUT', {
-          site_title: f.site_title.value,
-          bark_enabled: f.bark_enabled.checked,
-          bark_server: f.bark_server.value,
-          bark_key: f.bark_key.value,
-          bark_group: f.bark_group.value,
-          bark_sound: f.bark_sound.value,
-          keep_versions: keep
-        }));
-        applySiteTitle(out.site_title);
+        body.site_title = f.site_title.value;
+        body.keep_versions = keep;
+      }
+      try {
+        var out = await api('/api/settings', json('PUT', body));
+        if (st.editable) applySiteTitle(out.site_title);
         toast('设置已保存');
       } catch (err) { fail(err); }
     };
-    $('#bark-test').onclick = async function () {
+    var testBtn = $('#bark-test');
+    testBtn.onclick = async function () {
       var btn = this;
       btn.disabled = true;
       try {

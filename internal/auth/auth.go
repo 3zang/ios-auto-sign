@@ -14,7 +14,7 @@ import (
 )
 
 const cookieName = "ias_session"
-const sessionTTL = 7 * 24 * time.Hour
+const sessionTTL = 30 * 24 * time.Hour // 1 month
 
 type Manager struct {
 	st           *store.Store

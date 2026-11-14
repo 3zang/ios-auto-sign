@@ -236,6 +236,15 @@ button:disabled { opacity: .5; cursor: default; transform: none; }
 .step-btn:active { transform: scale(.94); }
 .step-val { min-width: 26px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
 .step-unit { color: var(--text-tertiary); font-size: 12px; }
+.interval-reset {
+  margin-left: 4px; padding: 2px 8px; height: 24px; flex: 0 0 auto;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--surface-solid); color: var(--text-tertiary); font-size: 12px; cursor: pointer;
+}
+.interval-reset:hover { border-color: var(--blue); color: var(--blue); }
+.interval-flag { font-weight: 600; }
+.interval-flag.mine { color: var(--blue); }
+.interval-flag.def { color: var(--text-tertiary); }
 
 /* Language switch: compact pill next to the theme toggle */
 .lang-switch {

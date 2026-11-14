@@ -138,38 +138,82 @@ func TestInstallURLIsFullyEncodedInPlistServerMode(t *testing.T) {
 	}
 }
 
-func TestSettingsAreAdminOnlyAndExposeTitlePublicly(t *testing.T) {
+func TestSettingsAreAdminOnlyForSiteAndPerUserForBark(t *testing.T) {
 	s, st := newTestServer(t)
-	body := `{"site_title":"我的签名站","bark_enabled":true,"bark_server":"https://api.day.app","bark_key":"secret-key","bark_group":"iOS"}`
+	// Seed the accounts the requests act on.
+	if err := st.Update(func(d *store.Data) error {
+		d.Users["u1"] = &store.User{ID: "u1", Username: "u1", Role: "user"}
+		d.Users["admin"] = &store.User{ID: "admin", Username: "admin", Role: "admin"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 
+	// A regular user can save their own Bark target.
+	body := `{"bark_enabled":true,"bark_server":"https://api.day.app","bark_key":"secret-key","bark_group":"iOS"}`
 	rr := httptest.NewRecorder()
 	s.saveSettings(rr, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body)),
 		&store.User{ID: "u1", Role: "user"})
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("non-admin save status = %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("user bark save status = %d: %s", rr.Code, rr.Body.String())
+	}
+	var u1 store.User
+	st.View(func(d *store.Data) { u1 = *d.Users["u1"] })
+	if !u1.Bark.Enabled || u1.Bark.Key != "secret-key" || u1.Bark.Server != "https://api.day.app" {
+		t.Fatalf("user bark not persisted: %+v", u1.Bark)
 	}
 
+	// A non-admin cannot change the site title, even if they include one.
 	rr = httptest.NewRecorder()
 	s.saveSettings(rr, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body)),
+		&store.User{ID: "u1", Role: "user"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("user settings save status = %d", rr.Code)
+	}
+	st.View(func(d *store.Data) {
+		if d.Settings.SiteTitle == "我的签名站" {
+			t.Fatal("non-admin changed the site title")
+		}
+		if d.Users["u1"] == nil || d.Users["u1"].Bark.Key != "secret-key" {
+			t.Fatalf("non-admin bark was wiped: %+v", d.Users["u1"])
+		}
+	})
+
+	// An admin saves the site title plus their own Bark target.
+	adminBody := `{"site_title":"我的签名站","bark_enabled":true,"bark_server":"https://api.day.app","bark_key":"admin-key","bark_group":"iOS"}`
+	rr = httptest.NewRecorder()
+	s.saveSettings(rr, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(adminBody)),
 		&store.User{ID: "admin", Role: "admin"})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("admin save status = %d: %s", rr.Code, rr.Body.String())
 	}
 	var cfg store.Settings
-	st.View(func(d *store.Data) { cfg = d.Settings })
-	if cfg.SiteTitle != "我的签名站" || !cfg.BarkEnabled || cfg.BarkKey != "secret-key" {
-		t.Fatalf("settings not persisted: %+v", cfg)
+	var adminUser store.User
+	st.View(func(d *store.Data) { cfg = d.Settings; adminUser = *d.Users["admin"] })
+	if cfg.SiteTitle != "我的签名站" {
+		t.Fatalf("site title = %q", cfg.SiteTitle)
+	}
+	if !adminUser.Bark.Enabled || adminUser.Bark.Key != "admin-key" {
+		t.Fatalf("admin bark not persisted: %+v", adminUser.Bark)
 	}
 
+	// A user only sees their own Bark fields, never another account's.
 	rr = httptest.NewRecorder()
-	s.getSettings(rr, httptest.NewRequest(http.MethodGet, "/api/settings", nil),
-		&store.User{ID: "u1", Role: "user"})
+	var realU1 *store.User
+	st.View(func(d *store.Data) { realU1 = d.Users["u1"] })
+	if realU1 == nil {
+		t.Fatal("u1 missing from store")
+	}
+	s.getSettings(rr, httptest.NewRequest(http.MethodGet, "/api/settings", nil), realU1)
 	var view map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if _, leaked := view["bark_key"]; leaked {
-		t.Fatal("bark device key leaked to a regular user")
+	if view["bark_key"] != "secret-key" {
+		t.Errorf("user should see their own bark key, got %v", view["bark_key"])
+	}
+	if view["bark_key"] == "admin-key" {
+		t.Error("user saw the administrator's bark key")
 	}
 	if view["site_title"] != "我的签名站" {
 		t.Errorf("site title = %v", view["site_title"])
@@ -184,6 +228,57 @@ func TestSettingsAreAdminOnlyAndExposeTitlePublicly(t *testing.T) {
 	if pub["site_title"] != "我的签名站" {
 		t.Errorf("public site title = %v", pub["site_title"])
 	}
+}
+
+func TestSetSourceIntervalIsPerUser(t *testing.T) {
+	s, st := newTestServer(t)
+	if err := st.Update(func(d *store.Data) error {
+		d.Users["u1"] = &store.User{ID: "u1", Username: "u1", Role: "user"}
+		d.Sources["src1"] = &store.Source{ID: "src1", OwnerID: "u1", Name: "S", URL: "https://x", Enabled: true, IntervalMinutes: 30}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Set a per-user interval.
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/sources/src1/interval",
+		strings.NewReader(`{"interval_minutes":7}`))
+	req.SetPathValue("id", "src1")
+	s.setSourceInterval(rr, req, &store.User{ID: "u1", Role: "user"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set interval status = %d: %s", rr.Code, rr.Body.String())
+	}
+	var u1 store.User
+	st.View(func(d *store.Data) { u1 = *d.Users["u1"] })
+	if u1.SourceIntervals["src1"] != 7 {
+		t.Fatalf("per-user interval not stored: %+v", u1.SourceIntervals)
+	}
+	if d := getSourceInterval(st, "src1"); d != 30 {
+		t.Fatalf("source default interval changed: %d, want 30", d)
+	}
+	// Reset to default (0).
+	rr = httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPut, "/api/sources/src1/interval",
+		strings.NewReader(`{"interval_minutes":0}`))
+	req2.SetPathValue("id", "src1")
+	s.setSourceInterval(rr, req2, &store.User{ID: "u1", Role: "user"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("reset interval status = %d", rr.Code)
+	}
+	st.View(func(d *store.Data) { u1 = *d.Users["u1"] })
+	if _, ok := u1.SourceIntervals["src1"]; ok {
+		t.Fatalf("interval override not cleared: %+v", u1.SourceIntervals)
+	}
+}
+
+func getSourceInterval(st *store.Store, id string) int {
+	var v int
+	st.View(func(d *store.Data) {
+		if s := d.Sources[id]; s != nil {
+			v = s.IntervalMinutes
+		}
+	})
+	return v
 }
 
 func TestListJobsIsLimitedToFive(t *testing.T) {

@@ -32,21 +32,13 @@ func New(st *store.Store, client *http.Client) *Sender {
 	return &Sender{st: st, client: client}
 }
 
-func (s *Sender) settings() store.Settings {
-	var out store.Settings
-	s.st.View(func(d *store.Data) { out = d.Settings })
-	if strings.TrimSpace(out.SiteTitle) == "" {
-		out.SiteTitle = store.DefaultSiteTitle
-	}
-	return out
-}
-
 type payload struct {
 	Title     string `json:"title"`
 	Body      string `json:"body"`
 	Group     string `json:"group,omitempty"`
 	Sound     string `json:"sound,omitempty"`
 	Icon      string `json:"icon,omitempty"`
+	URL       string `json:"url,omitempty"`
 	DeviceKey string `json:"device_key,omitempty"`
 }
 
@@ -62,39 +54,42 @@ type Update struct {
 	IconURL    string
 }
 
-// Push is a no-op when Bark is disabled or not configured. Callers can invoke
-// it unconditionally; a delivery failure never aborts source synchronisation.
-func (s *Sender) Push(ctx context.Context, title, body string) error {
-	return s.PushWithIcon(ctx, title, body, "")
-}
-
-// PushWithIcon behaves like Push but attaches a custom notification icon.
-// Bark renders it on iOS 15 and above; older clients ignore the field.
-func (s *Sender) PushWithIcon(ctx context.Context, title, body, iconURL string) error {
-	cfg := s.settings()
-	if !cfg.BarkEnabled {
+// Push delivers one message using the supplied per-user Bark config. It is a
+// no-op (returns nil) when the config is disabled or has no server.
+func (s *Sender) Push(ctx context.Context, cfg store.BarkConfig, title, body string) error {
+	if !cfg.Enabled {
 		return nil
 	}
-	return s.pushWith(ctx, cfg, title, body, iconURL)
+	return s.PushWithIcon(ctx, cfg, title, body, "")
 }
 
-// Test always sends, even while notifications are disabled, so an
-// administrator can verify the server/key before turning them on.
-func (s *Sender) Test(ctx context.Context) error {
-	cfg := s.settings()
-	return s.pushWith(ctx, cfg, "Bark 测试通知", "配置成功，之后检测到应用更新会推送到这里。", "")
+// PushWithIcon behaves like Push but attaches a custom notification icon. Bark
+// renders it on iOS 15 and above; older clients ignore the field.
+func (s *Sender) PushWithIcon(ctx context.Context, cfg store.BarkConfig, title, body, iconURL string) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	return s.sendBark(ctx, cfg, title, body, iconURL)
 }
 
-// NotifyAppUpdate is kept for callers that have no icon metadata.
+// Test sends a probe message through the supplied per-user config so the owner
+// can verify the server/key before relying on it.
+func (s *Sender) Test(ctx context.Context, cfg store.BarkConfig) error {
+	return s.sendBark(ctx, cfg, "Bark 测试通知", "配置成功，之后检测到应用更新会推送到这里。", "")
+}
+
+// NotifyAppUpdate is a thin legacy wrapper that routes to the per-user
+// notification path. Newer callers should use NotifyUpdates directly.
 func (s *Sender) NotifyAppUpdate(ctx context.Context, appName, version, sourceName string) error {
-	return s.NotifyUpdate(ctx, Update{
+	s.NotifyUpdates(ctx, []source.AppUpdate{{
 		AppName: appName, Version: version, SourceName: sourceName,
-	})
+	}})
+	return nil
 }
 
-// NotifyUpdate pushes one message per app, using that app's own icon as the
-// Bark notification icon whenever a usable absolute URL is available.
-func (s *Sender) NotifyUpdate(ctx context.Context, up Update) error {
+// NotifyUpdate delivers one message for a single app update using the given
+// user's Bark config, with that app's own icon as the notification icon.
+func (s *Sender) NotifyUpdate(ctx context.Context, up Update, cfg store.BarkConfig) error {
 	name := strings.TrimSpace(up.AppName)
 	if name == "" {
 		name = "应用"
@@ -107,38 +102,91 @@ func (s *Sender) NotifyUpdate(ctx context.Context, up Update) error {
 	if strings.TrimSpace(up.SourceName) != "" {
 		body += "（来源：" + strings.TrimSpace(up.SourceName) + "）"
 	}
-	return s.PushWithIcon(ctx, name+" 有更新", body, s.iconFor(up))
+	return s.sendBark(ctx, cfg, name+" 有更新", body, s.iconFor(up))
 }
 
-// NotifyUpdates pushes one message per newly discovered version, but only for
-// apps somebody has configured and enabled for signing. Unconfigured apps are
-// never signed on this installation, so announcing them is just noise. It
-// returns the number of notifications delivered and never fails a sync.
-func (s *Sender) NotifyUpdates(ctx context.Context, ups []source.AppUpdate) int {
+// NotifyUpdates pushes one message per newly discovered version, but only to the
+// users that have configured and enabled signing for that app — each using their
+// own Bark target. The optional only... filter restricts delivery to the given
+// user IDs (used by the per-user poll loop so a user is only notified when their
+// own refresh interval has elapsed). It returns the number of notifications
+// delivered and never fails a sync.
+func (s *Sender) NotifyUpdates(ctx context.Context, ups []source.AppUpdate, only ...string) int {
+	filter := make(map[string]bool, len(only))
+	for _, id := range only {
+		filter[id] = true
+	}
 	delivered := 0
 	for _, up := range ups {
-		if !s.isConfigured(up.AppID, up.BundleID) {
-			continue
+		for _, uid := range s.configuredUserIDs(up.AppID, up.BundleID) {
+			if len(filter) > 0 && !filter[uid] {
+				continue
+			}
+			var cfg store.BarkConfig
+			s.st.View(func(d *store.Data) {
+				if u := d.Users[uid]; u != nil {
+					cfg = u.Bark
+				}
+			})
+			if !cfg.Enabled || strings.TrimSpace(cfg.Server) == "" {
+				continue
+			}
+			c, cancel := context.WithTimeout(ctx, 15*time.Second)
+			err := s.NotifyUpdate(c, Update{
+				AppName: up.AppName, BundleID: up.BundleID, AppID: up.AppID,
+				Version: up.Version, SourceName: up.SourceName, IconURL: up.IconURL,
+			}, cfg)
+			cancel()
+			if err != nil {
+				log.Printf("bark notification for %s: %v", up.AppName, err)
+				continue
+			}
+			delivered++
 		}
-		c, cancel := context.WithTimeout(ctx, 15*time.Second)
-		err := s.NotifyUpdate(c, Update{
-			AppName: up.AppName, BundleID: up.BundleID, AppID: up.AppID,
-			Version: up.Version, SourceName: up.SourceName, IconURL: up.IconURL,
-		})
-		cancel()
-		if err != nil {
-			log.Printf("bark notification for %s: %v", up.AppName, err)
-			continue
-		}
-		delivered++
 	}
 	return delivered
 }
 
-// isConfigured reports whether any user has an enabled signing config for the
-// app. BundleID is a fallback for callers that only know the identifier.
-func (s *Sender) isConfigured(appID, bundleID string) bool {
-	found := false
+// UserUpdatesSince returns the app updates of one source that the user has not
+// been notified about yet, i.e. versions detected after `since`. This is what
+// makes per-user polling correct: a user is notified of every version that
+// appeared since their own last notification, regardless of how often anyone
+// else refreshes the same source. A zero `since` means "never notified", so the
+// caller must treat it as a baseline and skip the (entire) catalogue to avoid a
+// flood on first subscription.
+func (s *Sender) UserUpdatesSince(sourceID string, since time.Time) []source.AppUpdate {
+	var ups []source.AppUpdate
+	s.st.View(func(d *store.Data) {
+		src := d.Sources[sourceID]
+		if src == nil {
+			return
+		}
+		for _, v := range d.Versions {
+			if v.DetectedAt.IsZero() || !v.DetectedAt.After(since) {
+				continue
+			}
+			app := d.Apps[v.AppID]
+			if app == nil || app.SourceID != sourceID {
+				continue
+			}
+			name := app.Name
+			if strings.TrimSpace(name) == "" {
+				name = app.BundleID
+			}
+			ups = append(ups, source.AppUpdate{
+				AppName: name, BundleID: app.BundleID, AppID: app.ID,
+				IconURL: app.IconURL, Version: v.Version, SourceName: src.Name,
+			})
+		}
+	})
+	return ups
+}
+
+// configuredUserIDs returns the distinct IDs of users that have an enabled
+// signing config for the app. BundleID is a fallback for callers that only know
+// the identifier.
+func (s *Sender) configuredUserIDs(appID, bundleID string) []string {
+	var ids []string
 	s.st.View(func(d *store.Data) {
 		id := appID
 		if id == "" && bundleID != "" {
@@ -152,14 +200,15 @@ func (s *Sender) isConfigured(appID, bundleID string) bool {
 		if id == "" {
 			return
 		}
+		seen := map[string]bool{}
 		for _, c := range d.AppConfigs {
-			if c != nil && c.Enabled && c.AppID == id {
-				found = true
-				return
+			if c != nil && c.Enabled && c.AppID == id && !seen[c.UserID] {
+				seen[c.UserID] = true
+				ids = append(ids, c.UserID)
 			}
 		}
 	})
-	return found
+	return ids
 }
 
 // iconFor resolves the icon representing this app: a user-configured icon
@@ -240,17 +289,18 @@ func absoluteIconURL(raw string) string {
 	return u.String()
 }
 
-func (s *Sender) pushWith(ctx context.Context, cfg store.Settings, title, body, iconURL string) error {
-	server, err := normalizeServer(cfg.BarkServer)
+func (s *Sender) sendBark(ctx context.Context, cfg store.BarkConfig, title, body, iconURL string) error {
+	server, err := normalizeServer(cfg.Server)
 	if err != nil {
 		return err
 	}
-	key := strings.Trim(strings.TrimSpace(cfg.BarkKey), "/")
+	key := strings.Trim(strings.TrimSpace(cfg.Key), "/")
 	p := payload{
 		Title: title, Body: body,
-		Group: strings.TrimSpace(cfg.BarkGroup),
-		Sound: strings.TrimSpace(cfg.BarkSound),
+		Group: strings.TrimSpace(cfg.Group),
+		Sound: strings.TrimSpace(cfg.Sound),
 		Icon:  absoluteIconURL(iconURL),
+		URL:   strings.TrimSpace(cfg.URL),
 	}
 	endpoint := server
 	if key != "" {

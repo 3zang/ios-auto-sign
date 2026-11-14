@@ -39,7 +39,9 @@ var staticFS embed.FS
 var staticAssetRE = regexp.MustCompile(`(/static/[A-Za-z0-9._/-]+)`)
 
 // Version is injected at build time with
-//   -ldflags "-X ios-auto-sign/internal/web.Version=v1.0.5"
+//
+//	-ldflags "-X ios-auto-sign/internal/web.Version=v1.0.5"
+//
 // It is shown in the top bar and used as a cache-busting key for static
 // assets, so a newly deployed binary never serves a stale cached app.js.
 var Version = "dev"
@@ -172,6 +174,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/sources/{id}", s.auth.Require(s.updateSource))
 	mux.HandleFunc("DELETE /api/sources/{id}", s.auth.Require(s.deleteSource))
 	mux.HandleFunc("POST /api/sources/{id}/refresh", s.auth.Require(s.refreshSource))
+	mux.HandleFunc("PUT /api/sources/{id}/interval", s.auth.Require(s.setSourceInterval))
 
 	mux.HandleFunc("GET /api/apps", s.auth.Require(s.listApps))
 	mux.HandleFunc("PUT /api/apps/{id}/config", s.auth.Require(s.saveAppConfig))
@@ -201,6 +204,7 @@ func (s *Server) Handler() http.Handler {
 	// an alias but now uses the same authenticated, filtered handler.
 	mux.HandleFunc("GET /api/install/apps", s.auth.Require(s.installApps))
 	mux.HandleFunc("GET /api/public/apps", s.auth.Require(s.installApps))
+	mux.HandleFunc("GET /install/manifest.webmanifest", s.installManifest)
 	mux.HandleFunc("GET /manifest/{id}", s.manifest)
 	mux.HandleFunc("GET /ipa/{id}", s.ipa)
 	mux.HandleFunc("GET /assets/{name}", s.asset)
@@ -316,23 +320,73 @@ func (s *Server) me(w http.ResponseWriter, _ *http.Request, u *store.User) {
 
 // ---- subscription sources ----
 
-func sourceView(v *store.Source) map[string]any {
+func sourceView(v *store.Source, myInterval, defaultInterval int) map[string]any {
 	return map[string]any{
 		"id": v.ID, "owner_id": v.OwnerID, "name": v.Name, "url": v.URL,
 		"enabled": v.Enabled, "interval_minutes": v.IntervalMinutes,
+		"default_interval": defaultInterval, "my_interval": myInterval,
 		"etag": v.ETag, "last_checked_at": v.LastCheckedAt,
 		"last_changed_at": v.LastChangedAt, "last_error": v.LastError,
 	}
 }
 
-func (s *Server) listSources(w http.ResponseWriter, _ *http.Request, _ *store.User) {
+func (s *Server) listSources(w http.ResponseWriter, _ *http.Request, u *store.User) {
 	out := []map[string]any{}
 	s.st.View(func(d *store.Data) {
 		for _, v := range d.Sources {
-			out = append(out, sourceView(v))
+			out = append(out, sourceView(v, u.SourceIntervals[v.ID], v.IntervalMinutes))
 		}
 	})
 	writeJSON(w, http.StatusOK, out)
+}
+
+type sourceIntervalPayload struct {
+	IntervalMinutes int `json:"interval_minutes"`
+}
+
+// setSourceInterval stores this user's personal refresh interval for one source.
+// Each user tunes their own cadence; the value overrides the source's shared
+// default and never affects other accounts. The allowed range is 1..1440 minutes
+// (one minute to one day). Sending 0 clears the override so the source default
+// applies again.
+func (s *Server) setSourceInterval(w http.ResponseWriter, r *http.Request, u *store.User) {
+	id := r.PathValue("id")
+	if _, ok := s.canEditSource(id, u); !ok {
+		writeError(w, http.StatusNotFound, errors.New("source not found or not permitted"))
+		return
+	}
+	var p sourceIntervalPayload
+	if err := decodeJSON(r, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if p.IntervalMinutes < 0 || p.IntervalMinutes > 1440 {
+		writeError(w, http.StatusBadRequest, errors.New("refresh interval must be between 1 and 1440 minutes (0 to reset to default)"))
+		return
+	}
+	if err := s.st.Update(func(d *store.Data) error {
+		me := d.Users[u.ID]
+		if me == nil {
+			return errors.New("user not found")
+		}
+		if me.SourceIntervals == nil {
+			me.SourceIntervals = map[string]int{}
+		}
+		if p.IntervalMinutes == 0 {
+			delete(me.SourceIntervals, id)
+		} else {
+			me.SourceIntervals[id] = p.IntervalMinutes
+		}
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	var myInterval int
+	s.st.View(func(d *store.Data) {
+		myInterval = d.Users[u.ID].SourceIntervals[id]
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "my_interval": myInterval})
 }
 
 type sourcePayload struct {
@@ -371,7 +425,7 @@ func (s *Server) createSource(w http.ResponseWriter, r *http.Request, u *store.U
 		return
 	}
 	go s.refreshAsync(id)
-	writeJSON(w, http.StatusCreated, sourceView(src))
+	writeJSON(w, http.StatusCreated, sourceView(src, u.SourceIntervals[src.ID], src.IntervalMinutes))
 }
 
 func (s *Server) canEditSource(id string, u *store.User) (*store.Source, bool) {
@@ -416,7 +470,7 @@ func (s *Server) updateSource(w http.ResponseWriter, r *http.Request, u *store.U
 		return
 	}
 	updated, _ := s.st.Source(id)
-	writeJSON(w, http.StatusOK, sourceView(updated))
+	writeJSON(w, http.StatusOK, sourceView(updated, u.SourceIntervals[updated.ID], updated.IntervalMinutes))
 }
 
 func (s *Server) deleteSource(w http.ResponseWriter, r *http.Request, u *store.User) {
@@ -535,32 +589,32 @@ func (s *Server) listApps(w http.ResponseWriter, _ *http.Request, u *store.User)
 			if src := d.Sources[a.SourceID]; src != nil {
 				sourceName = src.Name
 			}
-		versions := []map[string]any{}
-		releaseURL, releaseDate := "", ""
-		for _, v := range d.Versions {
-			if v.AppID == a.ID {
-				// Prefer the newest version in case an app moved repositories.
-				if link := githubReleasesURL(v.DownloadURL); link != "" && v.Date > releaseDate {
-					releaseURL, releaseDate = link, v.Date
+			versions := []map[string]any{}
+			releaseURL, releaseDate := "", ""
+			for _, v := range d.Versions {
+				if v.AppID == a.ID {
+					// Prefer the newest version in case an app moved repositories.
+					if link := githubReleasesURL(v.DownloadURL); link != "" && v.Date > releaseDate {
+						releaseURL, releaseDate = link, v.Date
+					}
+					versions = append(versions, map[string]any{
+						"id": v.ID, "version": v.Version, "build_version": v.BuildVersion,
+						"date": v.Date, "download_url": v.DownloadURL, "size": v.Size,
+						"min_os_version": v.MinOSVersion, "detected_at": v.DetectedAt,
+						"localized_description": v.LocalizedDescription,
+					})
 				}
-				versions = append(versions, map[string]any{
-					"id": v.ID, "version": v.Version, "build_version": v.BuildVersion,
-					"date": v.Date, "download_url": v.DownloadURL, "size": v.Size,
-					"min_os_version": v.MinOSVersion, "detected_at": v.DetectedAt,
-					"localized_description": v.LocalizedDescription,
-				})
 			}
-		}
 			var cfg any
 			if c := d.AppConfigs[store.ConfigKey(u.ID, a.ID)]; c != nil {
 				cfg = c
 			}
 			out = append(out, item{
 				App: map[string]any{
-				"id": a.ID, "source_id": a.SourceID, "source_name": sourceName,
-				"bundle_id": a.BundleID, "release_url": releaseURL,
-				"name":      a.Name, "developer_name": a.DeveloperName,
-				"subtitle": a.Subtitle, "icon_url": a.IconURL, "updated_at": a.UpdatedAt,
+					"id": a.ID, "source_id": a.SourceID, "source_name": sourceName,
+					"bundle_id": a.BundleID, "release_url": releaseURL,
+					"name": a.Name, "developer_name": a.DeveloperName,
+					"subtitle": a.Subtitle, "icon_url": a.IconURL, "updated_at": a.UpdatedAt,
 				},
 				Versions: versions, Config: cfg,
 			})
@@ -911,8 +965,8 @@ func (s *Server) installApps(w http.ResponseWriter, r *http.Request, u *store.Us
 					log.Printf("install apps: remote manifest for %s: %v", a.ID, err)
 				} else {
 					// Everything after url= is encoded as one value so the remote
-				// /genPlist query string is never parsed as part of the scheme.
-				manifest, installURL = remote, plist.ItmsServicesURL(remote, true)
+					// /genPlist query string is never parsed as part of the scheme.
+					manifest, installURL = remote, plist.ItmsServicesURL(remote, true)
 				}
 			}
 			out = append(out, view{
@@ -925,6 +979,40 @@ func (s *Server) installApps(w http.ResponseWriter, r *http.Request, u *store.Us
 		}
 	})
 	writeJSON(w, http.StatusOK, out)
+}
+
+// installManifest serves a PWA manifest scoped to the install page so that
+// "Add to Home Screen" opens /install (not the admin root) and labels the icon
+// with this instance's name instead of the generic product name.
+func (s *Server) installManifest(w http.ResponseWriter, _ *http.Request) {
+	title := strings.TrimSpace(s.siteTitle())
+	if title == "" {
+		title = store.DefaultSiteTitle
+	}
+	short := title
+	runes := []rune(short)
+	if len(runes) > 12 {
+		short = string(runes[:12])
+	}
+	manifest := map[string]any{
+		"name":             title + " 应用安装",
+		"short_name":       short,
+		"description":      "iOS 应用安装",
+		"start_url":        "/install",
+		"scope":            "/install",
+		"display":          "standalone",
+		"orientation":      "any",
+		"background_color": "#f5f5f7",
+		"theme_color":      "#f5f5f7",
+		"icons": []map[string]any{{
+			"src":     "/static/appicon.png",
+			"sizes":   "any",
+			"type":    "image/png",
+			"purpose": "any maskable",
+		}},
+	}
+	w.Header().Set("Content-Type", "application/manifest+json")
+	_ = json.NewEncoder(w).Encode(manifest)
 }
 
 func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
@@ -1006,6 +1094,7 @@ type settingsPayload struct {
 	BarkKey      string `json:"bark_key"`
 	BarkSound    string `json:"bark_sound"`
 	BarkGroup    string `json:"bark_group"`
+	BarkURL      string `json:"bark_url"`
 	KeepVersions int    `json:"keep_versions"`
 }
 
@@ -1018,96 +1107,113 @@ func (s *Server) currentSettings() store.Settings {
 	return cfg
 }
 
-// settingsView never leaks the Bark device key to non-administrators.
-func settingsView(cfg store.Settings, editable bool) map[string]any {
-	view := map[string]any{
-		"site_title":    cfg.SiteTitle,
-		"keep_versions": cfg.KeepVersions,
-		"editable":      editable,
+// barkView returns the current user's personal Bark settings for the UI. It is
+// always returned to the signed-in user, who is the only one who can read or
+// change their own target.
+func barkView(u *store.User) map[string]any {
+	return map[string]any{
+		"bark_enabled": u.Bark.Enabled,
+		"bark_server":  u.Bark.Server,
+		"bark_key":     u.Bark.Key,
+		"bark_sound":   u.Bark.Sound,
+		"bark_group":   u.Bark.Group,
+		"bark_url":     u.Bark.URL,
 	}
-	if editable {
-		view["bark_enabled"] = cfg.BarkEnabled
-		view["bark_server"] = cfg.BarkServer
-		view["bark_key"] = cfg.BarkKey
-		view["bark_sound"] = cfg.BarkSound
-		view["bark_group"] = cfg.BarkGroup
-	}
-	return view
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, _ *http.Request, u *store.User) {
-	writeJSON(w, http.StatusOK, settingsView(s.currentSettings(), u.Role == "admin"))
+	writeJSON(w, http.StatusOK, s.settingsView(u))
 }
 
 func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request, u *store.User) {
-	if u.Role != "admin" {
-		writeError(w, http.StatusForbidden, errors.New("administrator only"))
-		return
-	}
 	var p settingsPayload
 	if err := decodeJSON(r, &p); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	title := strings.TrimSpace(p.SiteTitle)
-	if title == "" {
-		title = store.DefaultSiteTitle
-	}
-	if len([]rune(title)) > 60 {
-		writeError(w, http.StatusBadRequest, errors.New("site title must be at most 60 characters"))
-		return
-	}
-	server := strings.TrimRight(strings.TrimSpace(p.BarkServer), "/")
-	if server != "" {
-		if err := source.ValidateURL(server); err != nil {
+	// Every signed-in user owns their own Bark target. Site-level settings
+	// (title, version retention) remain administrator-only.
+	bark := u.Bark
+	bark.Enabled = p.BarkEnabled
+	bark.Server = strings.TrimRight(strings.TrimSpace(p.BarkServer), "/")
+	if bark.Server != "" {
+		if err := source.ValidateURL(bark.Server); err != nil {
 			writeError(w, http.StatusBadRequest, errors.New("Bark 服务器地址必须是完整的 http(s) URL"))
 			return
 		}
 	}
-	keep := p.KeepVersions
-	if keep < 1 {
-		keep = 1
-	}
-	if keep > 50 {
-		keep = 50
-	}
-	next := store.Settings{
-		SiteTitle:    title,
-		BarkEnabled:  p.BarkEnabled,
-		BarkServer:   server,
-		BarkKey:      strings.TrimSpace(p.BarkKey),
-		BarkSound:    strings.TrimSpace(p.BarkSound),
-		BarkGroup:    strings.TrimSpace(p.BarkGroup),
-		KeepVersions: keep,
-		UpdatedAt:    time.Now(),
-	}
+	bark.Key = strings.TrimSpace(p.BarkKey)
+	bark.Sound = strings.TrimSpace(p.BarkSound)
+	bark.Group = strings.TrimSpace(p.BarkGroup)
+	bark.URL = strings.TrimSpace(p.BarkURL)
+
 	if err := s.st.Update(func(d *store.Data) error {
-		d.Settings = next
+		if me := d.Users[u.ID]; me != nil {
+			me.Bark = bark
+		}
+		if u.Role == "admin" {
+			title := strings.TrimSpace(p.SiteTitle)
+			if title == "" {
+				title = store.DefaultSiteTitle
+			}
+			if len([]rune(title)) > 60 {
+				return errors.New("site title must be at most 60 characters")
+			}
+			keep := p.KeepVersions
+			if keep < 1 {
+				keep = 1
+			}
+			if keep > 50 {
+				keep = 50
+			}
+			cfg := d.Settings
+			cfg.SiteTitle = title
+			cfg.KeepVersions = keep
+			cfg.UpdatedAt = time.Now()
+			d.Settings = cfg
+		}
 		return nil
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	// Apply the new limit immediately so lowering it cleans up old artifacts
-	// right away instead of waiting for the next signing run. The signing
-	// manager is optional in some test harnesses, so guard the call.
-	if s.signing != nil {
+	// Apply the new retention limit immediately so lowering it cleans up old
+	// artifacts right away. Only an administrator reaches this branch.
+	if u.Role == "admin" && s.signing != nil {
+		keep := p.KeepVersions
+		if keep < 1 {
+			keep = 1
+		}
+		if keep > 50 {
+			keep = 50
+		}
 		if err := s.signing.TrimAll(keep); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, settingsView(s.currentSettings(), true))
+	writeJSON(w, http.StatusOK, s.settingsView(u))
+}
+
+// settingsView returns the current user's effective settings view: their own
+// Bark target plus the (admin-only) site settings they are allowed to see.
+func (s *Server) settingsView(u *store.User) map[string]any {
+	cfg := s.currentSettings()
+	view := map[string]any{
+		"site_title":    cfg.SiteTitle,
+		"keep_versions": cfg.KeepVersions,
+		"editable":      u.Role == "admin", // site-level settings (title, retention)
+	}
+	for k, v := range barkView(u) {
+		view[k] = v
+	}
+	return view
 }
 
 func (s *Server) testBark(w http.ResponseWriter, r *http.Request, u *store.User) {
-	if u.Role != "admin" {
-		writeError(w, http.StatusForbidden, errors.New("administrator only"))
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	if err := s.notifier.Test(ctx); err != nil {
+	if err := s.notifier.Test(ctx, u.Bark); err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
@@ -1148,7 +1254,31 @@ func (s *Server) runNow(w http.ResponseWriter, r *http.Request, u *store.User) {
 		updates = append(updates, res.Updates...)
 	}
 	if s.notifier != nil {
-		s.notifier.NotifyUpdates(ctx, updates)
+		// Notify only the caller, and only about versions they have not been
+		// told about yet. This keeps the manual run consistent with the
+		// per-user poll loop: one account's notification schedule never leaks
+		// into another's.
+		now := time.Now()
+		for _, id := range ids {
+			if u.SourceNotifiedAt[id].IsZero() {
+				continue // first run for this source: baseline, do not flood
+			}
+			ups := s.notifier.UserUpdatesSince(id, u.SourceNotifiedAt[id])
+			if len(ups) > 0 {
+				s.notifier.NotifyUpdates(ctx, ups, u.ID)
+			}
+		}
+		_ = s.st.Update(func(d *store.Data) error {
+			if me := d.Users[u.ID]; me != nil {
+				if me.SourceNotifiedAt == nil {
+					me.SourceNotifiedAt = map[string]time.Time{}
+				}
+				for _, id := range ids {
+					me.SourceNotifiedAt[id] = now
+				}
+			}
+			return nil
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sources":      len(results),

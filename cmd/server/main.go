@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 	"time"
 
@@ -108,51 +107,119 @@ func ensureDefaultSource(st *store.Store, cfg config.Config) {
 	})
 }
 
-// pollLoop honours each source's own interval_minutes (the old implementation
-// used one global ticker for everything). Every check drives notifications and
-// job creation from the sync results, exactly like the manual endpoints.
+// pollLoop drives per-user polling. Each account has its own refresh interval
+// per source (store.User.SourceIntervals, falling back to the source default)
+// and its own notification cursor (store.User.SourceNotifiedAt). A source is
+// fetched from upstream at most once per tick — but only when at least one user
+// is actually due for it — while every due user is then notified of the
+// versions discovered since their own last notification. This keeps one user's
+// schedule from leaking into another's.
 func pollLoop(ctx context.Context, cfg config.Config, st *store.Store, src *source.Service, sign *signing.Manager, bark *notify.Sender) {
-	run := func(all bool) {
+	const defaultInterval = 30
+
+	effectiveInterval := func(userInterval, sourceInterval int) int {
+		if userInterval > 0 {
+			return userInterval
+		}
+		if sourceInterval > 0 {
+			return sourceInterval
+		}
+		if cfg.PollIntervalMinutes > 0 {
+			return cfg.PollIntervalMinutes
+		}
+		return defaultInterval
+	}
+
+	run := func() {
 		now := time.Now()
-		var ids []string
+
+		// Snapshot the work we must do. Only plain values are kept across the
+		// Sync calls below, because the underlying store pointers are replaced
+		// by every Update and must not be held.
+		type duePair struct {
+			uid   string
+			srcID string
+			since time.Time // user's last notification cursor for this source
+		}
+		var due []duePair
+		needSync := map[string]bool{}
+
 		st.View(func(d *store.Data) {
-			for id, s := range d.Sources {
-				if !s.Enabled {
+			for _, u := range d.Users {
+				if u == nil {
 					continue
 				}
-				if all {
-					ids = append(ids, id)
-					continue
-				}
-				interval := s.IntervalMinutes
-				if interval < 1 {
-					interval = cfg.PollIntervalMinutes
-				}
-				if interval < 1 {
-					interval = 30
-				}
-				if s.LastCheckedAt.IsZero() || now.Sub(s.LastCheckedAt) >= time.Duration(interval)*time.Minute {
-					ids = append(ids, id)
+				for _, s := range d.Sources {
+					if !s.Enabled {
+						continue
+					}
+					if u.Role != "admin" && s.OwnerID != u.ID {
+						continue
+					}
+					iv := effectiveInterval(u.SourceIntervals[s.ID], s.IntervalMinutes)
+					since := u.SourceNotifiedAt[s.ID]
+					if since.IsZero() || now.Sub(since) >= time.Duration(iv)*time.Minute {
+						sinceCopy := since
+						due = append(due, duePair{uid: u.ID, srcID: s.ID, since: sinceCopy})
+						needSync[s.ID] = true
+					}
 				}
 			}
 		})
-		sort.Strings(ids)
-		for _, id := range ids {
+
+		// Fetch each needed source at most once this tick.
+		for sid := range needSync {
 			c, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			res, err := src.Sync(c, id)
+			res, err := src.Sync(c, sid)
 			if err != nil {
-				log.Printf("poll: source %s: %v", id, err)
+				log.Printf("poll: source %s: %v", sid, err)
 				cancel()
 				continue
 			}
 			if res.Changed {
-				log.Printf("poll: source %s changed, %d new version(s)", id, res.NewVersions)
-			}
-			if n := bark.NotifyUpdates(c, res.Updates); n > 0 {
-				log.Printf("poll: source %s sent %d bark notification(s)", id, n)
+				log.Printf("poll: source %s changed, %d new version(s)", sid, res.NewVersions)
 			}
 			cancel()
 		}
+
+		// Notify each due user of versions they have not been told about yet.
+		// Group SourceNotifiedAt writes per user to limit store churn.
+		userTouch := map[string][]string{}
+		for _, p := range due {
+			userTouch[p.uid] = append(userTouch[p.uid], p.srcID)
+			if p.since.IsZero() {
+				// First contact: establish the baseline so we never flood the
+				// device with the entire existing catalogue.
+				continue
+			}
+			ups := bark.UserUpdatesSince(p.srcID, p.since)
+			if len(ups) == 0 {
+				continue
+			}
+			if n := bark.NotifyUpdates(ctx, ups, p.uid); n > 0 {
+				log.Printf("poll: sent %d bark notification(s) to user %s for source %s", n, p.uid, p.srcID)
+			}
+		}
+
+		// Advance every touched user's notification cursor to now.
+		if len(userTouch) > 0 {
+			_ = st.Update(func(d *store.Data) error {
+				for uid, srcs := range userTouch {
+					u := d.Users[uid]
+					if u == nil {
+						continue
+					}
+					if u.SourceNotifiedAt == nil {
+						u.SourceNotifiedAt = map[string]time.Time{}
+					}
+					for _, sid := range srcs {
+						u.SourceNotifiedAt[sid] = now
+					}
+				}
+				return nil
+			})
+		}
+
 		// Idempotent: also picks up configs added since the last check.
 		n, err := sign.EnqueuePending()
 		if err != nil {
@@ -161,7 +228,7 @@ func pollLoop(ctx context.Context, cfg config.Config, st *store.Store, src *sour
 			log.Printf("poll: created %d signing job(s)", n)
 		}
 	}
-	run(true) // reconcile everything once at startup
+	run() // reconcile once at startup (every user is due the first time)
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -169,7 +236,7 @@ func pollLoop(ctx context.Context, cfg config.Config, st *store.Store, src *sour
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			run(false)
+			run()
 		}
 	}
 }

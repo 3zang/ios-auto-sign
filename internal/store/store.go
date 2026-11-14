@@ -24,6 +24,19 @@ type User struct {
 	PasswordHash string    `json:"password_hash"`
 	Role         string    `json:"role"` // admin | user
 	CreatedAt    time.Time `json:"created_at"`
+	// Bark is this user's personal push target. Empty/disabled means no
+	// notifications are sent to this account.
+	Bark BarkConfig `json:"bark"`
+	// SourceIntervals overrides the shared source refresh interval per source
+	// (minutes). A missing or zero entry falls back to the source's own
+	// IntervalMinutes. This lets each user tune how often the sources they
+	// care about are checked without affecting anyone else.
+	SourceIntervals map[string]int `json:"source_intervals"`
+	// SourceNotifiedAt records, per source, the last time we pushed update
+	// notifications for this user. It is the cursor that makes per-user polling
+	// correct: each user is notified only of versions detected after their own
+	// last notification, regardless of how often other users refresh.
+	SourceNotifiedAt map[string]time.Time `json:"source_notified_at"`
 }
 
 type Session struct {
@@ -161,16 +174,25 @@ const DefaultSiteTitle = "iOS 自动签名"
 
 // Settings holds the global, administrator-managed preferences. Unlike config
 // values these are editable at runtime from the web UI and persisted in the
-// same atomic store file.
+// same atomic store file. Per-user preferences (Bark notification targets and
+// per-source refresh intervals) live on the User record instead, so one user's
+// choices never affect another.
 type Settings struct {
 	SiteTitle    string    `json:"site_title"`
-	BarkEnabled  bool      `json:"bark_enabled"`
-	BarkServer   string    `json:"bark_server"`
-	BarkKey      string    `json:"bark_key"`
-	BarkSound    string    `json:"bark_sound"`
-	BarkGroup    string    `json:"bark_group"`
 	KeepVersions int       `json:"keep_versions"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// BarkConfig is a user's personal Bark push target. It is stored on the User so
+// every account receives its own update notifications on its own device, and
+// nobody else can read or change it.
+type BarkConfig struct {
+	Enabled bool   `json:"enabled"`
+	Server  string `json:"server"`
+	Key     string `json:"key"`
+	Sound   string `json:"sound"`
+	Group   string `json:"group"`
+	URL     string `json:"url"` // optional redirect URL opened when the notification is tapped
 }
 
 type Data struct {

@@ -8,10 +8,10 @@
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="AutoSign">
+<meta name="apple-mobile-web-app-title" content="应用安装">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="apple-touch-icon" href="/static/appicon.png">
-<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="manifest" href="/install/manifest.webmanifest">
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/theme.js"></script>
 <script src="/static/i18n.js"></script>
@@ -157,6 +157,17 @@
     if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
     else dlg.setAttribute('open', '');
   }
+
+  // Reflect this instance's name on the home-screen label and document title,
+  // so "Add to Home Screen" does not fall back to the generic product name.
+  fetch('/api/config/public').then(function (r) { return r.ok ? r.json() : null; }).then(function (cfg) {
+    var name = cfg && cfg.site_title ? cfg.site_title : '应用安装';
+    document.title = name + ' 应用安装';
+    var mt = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (mt) mt.setAttribute('content', name.length > 12 ? name.slice(0, 12) : name);
+    var h1 = document.querySelector('.page-head h1');
+    if (h1) h1.textContent = name + ' 应用安装';
+  }).catch(function () { /* keep defaults */ });
 
   fetch('/api/install/apps').then(function (r) {
     if (r.status === 401) { $('#login-required').hidden = false; return null; }
