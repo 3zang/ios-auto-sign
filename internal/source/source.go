@@ -47,6 +47,8 @@ type altVersion struct {
 type AppUpdate struct {
 	AppName    string `json:"app_name"`
 	BundleID   string `json:"bundle_id"`
+	AppID      string `json:"app_id,omitempty"`
+	IconURL    string `json:"icon_url,omitempty"`
 	Version    string `json:"version"`
 	SourceName string `json:"source_name"`
 }
@@ -207,6 +209,7 @@ func (s *Service) Sync(ctx context.Context, sourceID string) (*SyncResult, error
 					}
 					res.Updates = append(res.Updates, AppUpdate{
 						AppName: name, BundleID: a.BundleIdentifier,
+						AppID: app.ID, IconURL: a.IconURL,
 						Version: v.Version, SourceName: src.Name,
 					})
 				}

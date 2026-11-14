@@ -21,7 +21,8 @@ func TestSyncHookReportsOnlyNewVersions(t *testing.T) {
 		if calls >= 2 {
 			extra = `,{"version":"2.0","date":"2026-02-02","downloadURL":"https://x/2.ipa"}`
 		}
-		fmt.Fprintf(w, `{"apps":[{"name":"Demo","bundleIdentifier":"com.demo","versions":[`+
+		fmt.Fprintf(w, `{"apps":[{"name":"Demo","bundleIdentifier":"com.demo",`+
+			`"iconURL":"https://cdn.example.com/demo.png","versions":[`+
 			`{"version":"1.0","date":"2026-01-01","downloadURL":"https://x/1.ipa"}%s]}]}`, extra)
 	}))
 	defer srv.Close()
@@ -59,6 +60,9 @@ func TestSyncHookReportsOnlyNewVersions(t *testing.T) {
 	}
 	if got[0].AppName != "Demo" || got[0].Version != "2.0" || got[0].SourceName != "测试源" {
 		t.Errorf("unexpected update payload: %+v", got[0])
+	}
+	if got[0].IconURL != "https://cdn.example.com/demo.png" || got[0].AppID == "" {
+		t.Errorf("update must carry the app icon and id for notifications: %+v", got[0])
 	}
 	if _, err := svc.Sync(ctx, id); err != nil {
 		t.Fatal(err)

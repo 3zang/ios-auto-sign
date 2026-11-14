@@ -51,11 +51,15 @@ func main() {
 	signMgr := signing.New(st, cfg, key, client)
 	server := web.New(cfg, st, authMgr, sourceSvc, signMgr, gen, key, client)
 
-	// Every newly discovered version produces one Bark message naming the app.
-	// Delivery failures are logged and never fail the sync itself.
+	// Every newly discovered version produces one Bark message naming the app
+	// and carrying that app's icon. Delivery failures are logged and never
+	// fail the sync itself.
 	bark := notify.New(st, client)
 	sourceSvc.SetUpdateHook(func(ctx context.Context, up source.AppUpdate) {
-		if err := bark.NotifyAppUpdate(ctx, up.AppName, up.Version, up.SourceName); err != nil {
+		if err := bark.NotifyUpdate(ctx, notify.Update{
+			AppName: up.AppName, BundleID: up.BundleID, AppID: up.AppID,
+			Version: up.Version, SourceName: up.SourceName, IconURL: up.IconURL,
+		}); err != nil {
 			log.Printf("bark notification: %v", err)
 		}
 	})
