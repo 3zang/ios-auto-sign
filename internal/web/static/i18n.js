@@ -45,6 +45,14 @@
     '安装': 'Install',
     '日志': 'Logs',
     '设置中心': 'Settings',
+    '用户': 'Users',
+    '已注册用户': 'Registered users',
+    '下次检查': 'Next check',
+    '待首次检查': 'Awaiting first check',
+    '角色': 'Role',
+    '管理员': 'Admin',
+    '普通用户': 'User',
+    '注册时间': 'Registered',
 
     // ---- log viewer ----
     '运行日志': 'Server log',
@@ -52,6 +60,8 @@
     '警告': 'Warning',
     '自动刷新': 'Auto refresh',
     '清空视图': 'Clear view',
+    '仅管理员可查看服务器日志': 'Only administrators can view the server log',
+    '仅管理员可查看用户列表': 'Only administrators can view the user list',
 
     // ---- source refresh interval ----
     '间隔': 'Interval',

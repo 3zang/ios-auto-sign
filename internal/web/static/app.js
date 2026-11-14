@@ -142,6 +142,9 @@
   var loaders = {};
   var appFilter = 'all';
   var appSort = 'time';
+  var appPage = 1;
+  var appPageSize = 12;
+  var lastApps = [], lastIcons = [], lastCerts = [];
   var jobArtifacts = [];
   var currentJobs = [];
   var artPage = 1;
@@ -257,6 +260,20 @@
     renderSources(await api('/api/sources'));
   };
 
+  // Predicts the next automatic poll time for a source, mirroring pollLoop's
+  // rule: a source is checked when (now - last_checked) >= interval_minutes.
+  // Disabled sources are never scheduled; a source that has never been checked
+  // is waiting for its first run.
+  function nextCheckText(s) {
+    if (!s.enabled) return '—';
+    if (!s.last_checked_at) return tr('待首次检查');
+    var last = new Date(s.last_checked_at);
+    if (isNaN(last.getTime())) return '—';
+    var interval = s.interval_minutes || pub.poll_minutes || 30;
+    var next = new Date(last.getTime() + interval * 60000);
+    return fmtDateTime(next);
+  }
+
   function renderSources(list) {
     sourcesCache = list;
     var rows = list.map(function (s) {
@@ -270,6 +287,7 @@
           '<span class="step-unit">' + tr('分钟') + '</span>' +
         '</div></td>' +
         '<td>' + esc(fmtTime(s.last_checked_at)) + '</td>' +
+        '<td class="mono">' + nextCheckText(s) + '</td>' +
         '<td>' + (s.last_error ? '<span class="tag err">' + esc(s.last_error) + '</span>' : '-') + '</td>' +
         '<td class="source-actions"><div class="row-actions">' +
           '<button data-action="refresh-source" data-id="' + esc(s.id) + '">刷新</button>' +
@@ -291,8 +309,8 @@
         '<label class="inline"><input name="enabled" type="checkbox" checked> 启用</label>' +
         '<button type="submit" class="primary">添加并同步</button>' +
       '</form>' +
-      '<table><thead><tr><th>名称</th><th>地址</th><th>状态</th><th>间隔</th><th>上次检查</th><th>错误</th><th>操作</th></tr></thead>' +
-      '<tbody>' + (rows || '<tr><td colspan="7" class="muted">暂无订阅源</td></tr>') + '</tbody></table>';
+      '<table><thead><tr><th>名称</th><th>地址</th><th>状态</th><th>间隔</th><th>上次检查</th><th>下次检查</th><th>错误</th><th>操作</th></tr></thead>' +
+      '<tbody>' + (rows || '<tr><td colspan="8" class="muted">暂无订阅源</td></tr>') + '</tbody></table>';
 
     $('#source-form').onsubmit = async function (e) {
       e.preventDefault();
@@ -366,7 +384,8 @@
 
   loaders.apps = async function () {
     var r = await Promise.all([api('/api/apps'), api('/api/icons'), api('/api/certificates')]);
-    renderApps(r[0], r[1], r[2]);
+    lastApps = r[0]; lastIcons = r[1]; lastCerts = r[2];
+    renderApps(lastApps, lastIcons, lastCerts);
   };
 
   function renderApps(apps, icons, certs) {
@@ -399,7 +418,14 @@
       return appTime(y).localeCompare(appTime(x));
     });
 
-    var cards = visible.map(function (row) {
+    // Paginate the (filtered, sorted) list so a large catalogue stays snappy.
+    var appPages = Math.max(1, Math.ceil(visible.length / appPageSize));
+    if (appPage > appPages) appPage = appPages;
+    if (appPage < 1) appPage = 1;
+    var appStart = (appPage - 1) * appPageSize;
+    var pageApps = visible.slice(appStart, appStart + appPageSize);
+
+    var cards = pageApps.map(function (row) {
       var a = row.app, c = row.config || {};
       var opts = c.sign_options || {};
       var versions = (row.versions || []).slice().sort(function (x, y) {
@@ -468,7 +494,15 @@
       '<div class="card-grid">' + (cards ||
         (appFilter === 'configured'
           ? '<div class="muted">还没有已配置的应用，切换到「全部」勾选并保存配置。</div>'
-          : '<div class="muted">暂无应用，请先在「订阅源」中刷新元数据。</div>')) + '</div>';
+          : '<div class="muted">暂无应用，请先在「订阅源」中刷新元数据。</div>')) + '</div>' +
+      (appPages > 1 ? '<div class="pager">' +
+        '<button data-page="prev"' + (appPage <= 1 ? ' disabled' : '') + '>' + tr('上一页') + '</button>' +
+        '<span class="pager-info">' + tr('第') + ' ' + appPage + ' / ' + appPages + ' ' + tr('页') + ' · ' + tr('共') + ' ' + visible.length + ' ' + tr('条') + '</span>' +
+        '<button data-page="next"' + (appPage >= appPages ? ' disabled' : '') + '>' + tr('下一页') + '</button>' +
+        '<label class="pager-size">' + tr('每页') + '<select data-page-size>' +
+          [6, 12, 24, 48].map(function (n) { return '<option value="' + n + '"' + (n === appPageSize ? ' selected' : '') + '>' + n + '</option>'; }).join('') +
+        '</select>' + tr('条') + '</label>' +
+      '</div>' : '');
 
     bindUpdateTips();
     $$('.app-config').forEach(function (f) {
@@ -526,15 +560,35 @@
     $$('#panel-apps button[data-app-filter]').forEach(function (b) {
       b.onclick = function () {
         appFilter = b.dataset.appFilter;
+        appPage = 1;
         loaders.apps();
       };
     });
     $$('#panel-apps button[data-app-sort]').forEach(function (b) {
       b.onclick = function () {
         appSort = b.dataset.appSort;
+        appPage = 1;
         loaders.apps();
       };
     });
+    $$('#panel-apps button[data-page]').forEach(function (b) {
+      b.onclick = function () {
+        if (b.disabled) return;
+        if (b.dataset.page === 'prev' && appPage > 1) appPage--;
+        else if (b.dataset.page === 'next' && appPage < appPages) appPage++;
+        renderApps(lastApps, lastIcons, lastCerts);
+        alignAppCards();
+      };
+    });
+    var appSizeSel = $('#panel-apps select[data-page-size]');
+    if (appSizeSel) {
+      appSizeSel.onchange = function () {
+        appPageSize = Number(appSizeSel.value) || 12;
+        appPage = 1;
+        renderApps(lastApps, lastIcons, lastCerts);
+        alignAppCards();
+      };
+    }
     alignAppCards();
   }
 
@@ -798,6 +852,14 @@
 
   loaders.logs = async function () {
     var panel = $('#panel-logs');
+    if (me.role !== 'admin') {
+      // Defence in depth: the API also returns 403, but a non-admin should
+      // never reach a working log viewer even if the tab was force-opened.
+      panel.innerHTML =
+        '<p class="section-kicker">SERVER LOG</p><h2>运行日志</h2>' +
+        '<div class="empty-state">' + tr('仅管理员可查看服务器日志') + '</div>';
+      return;
+    }
     if (!panel.dataset.built) {
       panel.dataset.built = '1';
       panel.innerHTML =
@@ -835,6 +897,32 @@
     logState.lastSeq = data.seq;
     renderLogEntries(data.entries, false);
     startLogPolling();
+  };
+
+  // ---------- users (admin only) ----------
+  loaders.users = async function () {
+    var panel = $('#panel-users');
+    if (me.role !== 'admin') {
+      panel.innerHTML = '<div class="empty-state">' + tr('仅管理员可查看用户列表') + '</div>';
+      return;
+    }
+    var list = await api('/api/users');
+    var rows = list.map(function (u) {
+      var roleTag = u.role === 'admin'
+        ? '<span class="tag ok">' + tr('管理员') + '</span>'
+        : '<span class="tag">' + tr('普通用户') + '</span>';
+      return '<tr>' +
+        '<td data-i18n-skip><b>' + esc(u.username) + '</b></td>' +
+        '<td>' + roleTag + '</td>' +
+        '<td class="mono">' + esc(fmtDateTime(u.created_at)) + '</td>' +
+      '</tr>';
+    }).join('');
+    panel.innerHTML =
+      '<p class="section-kicker">USERS</p>' +
+      '<h2>已注册用户</h2>' +
+      '<div class="hint">' + list.length + ' 位用户已注册。</div>' +
+      '<table><thead><tr><th>用户名</th><th>角色</th><th>注册时间</th></tr></thead>' +
+      '<tbody>' + (rows || '<tr><td colspan="3" class="muted">暂无用户</td></tr>') + '</tbody></table>';
   };
 
   // ---------- install (account scoped, shown as a tab) ----------
@@ -1082,6 +1170,11 @@
     $('#app').hidden = false;
     // Only the account name is shown; repeating the role produced "admin · admin".
     $('#who').textContent = me.username;
+    // Admin-only tabs (日志 / 用户) are hidden for ordinary users so they can
+    // neither see nor switch to panels they are not authorised to view.
+    $$('.tab[data-role="admin"]').forEach(function (b) {
+      if (me.role !== 'admin') { b.hidden = true; b.style.display = 'none'; }
+    });
     try { pub = await api('/api/config/public'); } catch (e) { pub = {}; }
     applySiteTitle(pub.site_title);
     if (pub.version) {

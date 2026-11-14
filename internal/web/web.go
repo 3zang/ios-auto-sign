@@ -195,6 +195,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/bark/test", s.auth.Require(s.testBark))
 	mux.HandleFunc("POST /api/sync/run", s.auth.Require(s.runNow))
 	mux.HandleFunc("GET /api/logs", s.auth.Require(s.listLogs))
+	mux.HandleFunc("GET /api/users", s.auth.Require(s.listUsers))
 
 	// Installation data is account-scoped. The legacy public path is kept as
 	// an alias but now uses the same authenticated, filtered handler.
@@ -1162,7 +1163,11 @@ func (s *Server) runNow(w http.ResponseWriter, r *http.Request, u *store.User) {
 // `limit` caps the number of entries (default/max applied server-side) and
 // `since` returns only entries newer than the given sequence number, which the
 // UI uses for incremental polling.
-func (s *Server) listLogs(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) listLogs(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if u.Role != "admin" {
+		writeError(w, http.StatusForbidden, errors.New("administrator only"))
+		return
+	}
 	q := r.URL.Query()
 	limit := 0
 	if v := q.Get("limit"); v != "" {
@@ -1187,4 +1192,28 @@ func (s *Server) listLogs(w http.ResponseWriter, r *http.Request, _ *store.User)
 		"entries": entries,
 		"seq":     s.logBuf.Seq(),
 	})
+}
+
+// listUsers returns every registered account. It is administrative only: a
+// normal user must never be able to enumerate the account roster.
+func (s *Server) listUsers(w http.ResponseWriter, _ *http.Request, u *store.User) {
+	if u.Role != "admin" {
+		writeError(w, http.StatusForbidden, errors.New("administrator only"))
+		return
+	}
+	out := []map[string]any{}
+	s.st.View(func(d *store.Data) {
+		for _, usr := range d.Users {
+			out = append(out, map[string]any{
+				"id":         usr.ID,
+				"username":   usr.Username,
+				"role":       usr.Role,
+				"created_at": usr.CreatedAt,
+			})
+		}
+	})
+	sort.Slice(out, func(i, j int) bool {
+		return out[i]["username"].(string) < out[j]["username"].(string)
+	})
+	writeJSON(w, http.StatusOK, out)
 }
