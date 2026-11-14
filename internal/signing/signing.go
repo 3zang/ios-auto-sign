@@ -443,7 +443,32 @@ func (m *Manager) execute(ctx context.Context, job *store.SignJob) (string, erro
 	return logText + "\nartifact: " + artifactID, nil
 }
 
-// enforceRetention keeps only the newest KeepVersions artifacts per user+app
+// keepVersions returns the effective retention count: the administrator-set
+// value wins, otherwise the config file default is used. It is always >= 1.
+func (m *Manager) keepVersions() int {
+	var n int
+	m.st.View(func(d *store.Data) { n = d.Settings.KeepVersions })
+	if n < 1 {
+		n = m.cfg.KeepVersions
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// removeArtifactFiles deletes the on-disk IPA, icon and any cached manifest
+// for an artifact. Missing files are ignored.
+func removeArtifactFiles(cfg config.Config, a store.Artifact) {
+	for _, rel := range []string{a.IPAPath, a.IconPath} {
+		if rel != "" {
+			_ = os.Remove(filepath.Join(cfg.DataDir, rel))
+		}
+	}
+	_ = os.Remove(filepath.Join(cfg.Dir("manifests"), a.ID+".plist"))
+}
+
+// enforceRetention keeps only the newest keepVersions artifacts per user+app
 // and removes their IPA, icon and manifest files from disk.
 func (m *Manager) enforceRetention(userID, appID string) {
 	var arts []store.Artifact
@@ -454,22 +479,75 @@ func (m *Manager) enforceRetention(userID, appID string) {
 			}
 		}
 	})
+	keep := m.keepVersions()
 	sort.Slice(arts, func(i, j int) bool { return arts[i].CreatedAt.After(arts[j].CreatedAt) })
-	if len(arts) <= m.cfg.KeepVersions {
+	if len(arts) <= keep {
 		return
 	}
-	stale := arts[m.cfg.KeepVersions:]
+	stale := arts[keep:]
 	for _, a := range stale {
-		for _, rel := range []string{a.IPAPath, a.IconPath} {
-			if rel != "" {
-				_ = os.Remove(filepath.Join(m.cfg.DataDir, rel))
-			}
-		}
-		_ = os.Remove(filepath.Join(m.cfg.Dir("manifests"), a.ID+".plist"))
+		removeArtifactFiles(m.cfg, a)
 	}
 	_ = m.st.Update(func(d *store.Data) error {
 		for _, a := range stale {
 			delete(d.Artifacts, a.ID)
+		}
+		return nil
+	})
+}
+
+// DeleteArtifact removes a single published artifact and its install data
+// (IPA file, icon file and cached manifest). The install list is derived from
+// artifacts, so removing it also drops the corresponding install entry.
+func (m *Manager) DeleteArtifact(id string) error {
+	var a *store.Artifact
+	m.st.View(func(d *store.Data) {
+		if x := d.Artifacts[id]; x != nil {
+			cp := *x
+			a = &cp
+		}
+	})
+	if a == nil {
+		return errors.New("artifact not found")
+	}
+	removeArtifactFiles(m.cfg, *a)
+	return m.st.Update(func(d *store.Data) error {
+		delete(d.Artifacts, id)
+		return nil
+	})
+}
+
+// TrimAll enforces the retention limit across every user+app pair at once. It
+// is used when the administrator lowers the keep-versions setting so existing
+// artifacts are cleaned up immediately rather than only on the next signing.
+func (m *Manager) TrimAll(keep int) error {
+	if keep < 1 {
+		keep = 1
+	}
+	byKey := map[string][]*store.Artifact{}
+	m.st.View(func(d *store.Data) {
+		for _, a := range d.Artifacts {
+			key := a.UserID + "\x00" + a.AppID
+			byKey[key] = append(byKey[key], a)
+		}
+	})
+	var remove []string
+	for _, list := range byKey {
+		if len(list) <= keep {
+			continue
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].CreatedAt.After(list[j].CreatedAt) })
+		for _, a := range list[keep:] {
+			remove = append(remove, a.ID)
+			removeArtifactFiles(m.cfg, *a)
+		}
+	}
+	if len(remove) == 0 {
+		return nil
+	}
+	return m.st.Update(func(d *store.Data) error {
+		for _, id := range remove {
+			delete(d.Artifacts, id)
 		}
 		return nil
 	})

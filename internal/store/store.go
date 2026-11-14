@@ -157,13 +157,14 @@ const DefaultSiteTitle = "iOS 自动签名"
 // values these are editable at runtime from the web UI and persisted in the
 // same atomic store file.
 type Settings struct {
-	SiteTitle   string    `json:"site_title"`
-	BarkEnabled bool      `json:"bark_enabled"`
-	BarkServer  string    `json:"bark_server"`
-	BarkKey     string    `json:"bark_key"`
-	BarkSound   string    `json:"bark_sound"`
-	BarkGroup   string    `json:"bark_group"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	SiteTitle    string    `json:"site_title"`
+	BarkEnabled  bool      `json:"bark_enabled"`
+	BarkServer   string    `json:"bark_server"`
+	BarkKey      string    `json:"bark_key"`
+	BarkSound    string    `json:"bark_sound"`
+	BarkGroup    string    `json:"bark_group"`
+	KeepVersions int       `json:"keep_versions"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type Data struct {

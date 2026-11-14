@@ -21,6 +21,9 @@
     document.documentElement.setAttribute('data-theme', t);
     var meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute('content', t === 'dark' ? '#0b0b0d' : '#f5f5f7');
+    // iOS status bar: dark theme -> white text ("black"), light -> dark text.
+    var sb = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+    if (sb) sb.setAttribute('content', t === 'dark' ? 'black' : 'default');
     var label = t === 'dark' ? '切换到浅色模式' : '切换到深色模式';
     var switches = document.querySelectorAll('.theme-switch');
     for (var i = 0; i < switches.length; i++) {

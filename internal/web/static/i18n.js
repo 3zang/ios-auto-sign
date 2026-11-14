@@ -261,7 +261,26 @@
     '桌面浏览器点击不会触发安装。': 'Desktop browsers will not trigger installation.',
     '更新时间': 'Updated',
     '的安装二维码': ' install QR code',
-    '点击缩略图可放大预览': 'Click a thumbnail to enlarge'
+    '点击缩略图可放大预览': 'Click a thumbnail to enlarge',
+
+    // ---- version detail / artifacts / settings (added) ----
+    '更新详情': 'Update details',
+    '更多': 'More',
+    '收起': 'Collapse',
+    '删除该产物？对应的安装入口与安装包也会一并移除。': 'Delete this artifact? Its install entry and IPA are removed too.',
+    '已删除产物': 'Artifact deleted',
+    '上一页': 'Previous',
+    '下一页': 'Next',
+    '第': 'Page',
+    '页': 'pages',
+    '共': 'Total',
+    '条': 'items',
+    '每页': 'Per page',
+    '个版本': 'versions',
+    '版本保留': 'Version retention',
+    '每应用保留版本数': 'Versions kept per app',
+    '每个应用最多保留的已签名版本数量；超过后最旧的版本会被自动清理，对应安装入口一并移除。': 'Maximum signed versions kept per app; older ones are auto-removed with their install entries.',
+    '版本自动保留策略由管理员配置。': 'The version-retention policy is set by the administrator.'
   };
 
   var KEYS = Object.keys(EN).sort(function (a, b) { return b.length - a.length; });
@@ -270,7 +289,7 @@
   // Only long, unambiguous phrases may be replaced inside a longer sentence.
   // Short labels are translated by exact match only, so "安装" never turns
   // "安装数据已按账号隔离" into a half-translated string.
-  var SHORT_PARTIAL = ['已配置', '全部', '版本', '分钟', '大小', '预览', '个任务', '等', '控制台', '文件'];
+  var SHORT_PARTIAL = ['已配置', '全部', '版本', '分钟', '大小', '预览', '个任务', '等', '控制台', '文件', '更多', '收起', '个版本', '第', '共', '条', '上一页', '下一页', '每页', '页'];
   var PARTIAL = KEYS.filter(function (k) {
     return k.length >= 4 || SHORT_PARTIAL.indexOf(k) >= 0;
   });

@@ -17,7 +17,35 @@
       return new Date(t).toLocaleString(locale);
     } catch (e) { return String(t); }
   }
+  // Localized, fixed-format timestamp: yyyy-MM-dd HH:mm:ss in the viewer's
+  // timezone. Used for update / signing times so the format is stable across
+  // locales instead of toLocaleString's variable layout.
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function fmtDateTime(t) {
+    if (!t) return '-';
+    try {
+      var d = new Date(t);
+      if (isNaN(d.getTime())) return String(t);
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+        ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    } catch (e) { return String(t); }
+  }
   function fmtSize(n) { return n ? (n / 1048576).toFixed(1) + ' MB' : '-'; }
+
+  // Per-app version update detail: the latest version's changelog, truncated
+  // with a "更多" button. Clicking toggles the full text inline; hovering the
+  // truncated text also shows it via the native title tooltip.
+  function updateDetailHTML(latest) {
+    if (!latest || !latest.localized_description) return '';
+    var full = String(latest.localized_description);
+    var trunc = full.length > 48 ? full.slice(0, 48) + '…' : full;
+    return '<div class="app-update">' +
+      '<span class="update-label">' + tr('更新详情') + '</span>' +
+      '<span class="update-text" title="' + esc(full) + '">' + esc(trunc) + '</span>' +
+      '<button class="more-btn" type="button">' + tr('更多') + '</button>' +
+      '<div class="update-full" hidden>' + esc(full) + '</div>' +
+    '</div>';
+  }
 
   async function api(path, opts) {
     var res = await fetch(path, opts || {});
@@ -44,6 +72,10 @@
   var loaders = {};
   var appFilter = 'all';
   var appSort = 'time';
+  var jobArtifacts = [];
+  var currentJobs = [];
+  var artPage = 1;
+  var artPageSize = 10;
 
   function applySiteTitle(title) {
     var t = String(title || '').trim() || 'iOS 自动签名';
@@ -243,7 +275,9 @@
       return '<div class="card">' +
         '<div class="card-head">' + icon + '<div><div class="name" data-i18n-skip>' + esc(a.name) + '</div>' +
           '<div class="sub mono">' + esc(a.bundle_id) + '</div>' +
-          '<div class="sub">' + (latest ? '版本 ' + esc(latest.version) + ' · ' + esc(latest.date) : '暂无版本') + '</div></div></div>' +
+          '<div class="sub">' + (latest ? '版本 ' + esc(latest.version) : '暂无版本') + '</div>' +
+          (latest ? '<div class="sub">' + tr('更新时间') + '：' + esc(fmtDateTime(latest.detected_at || latest.date)) + '</div>' : '') +
+          updateDetailHTML(latest) + '</div></div>' +
         '<div class="card-body">' +
           '<details><summary>配置签名元数据</summary>' +
           '<form class="app-config stack" data-id="' + esc(a.id) + '" style="margin-top:12px">' +
@@ -321,6 +355,16 @@
           }));
           toast('配置已保存');
         } catch (err) { fail(err); }
+      };
+    });
+    $$('#panel-apps .more-btn').forEach(function (b) {
+      b.onclick = function (e) {
+        e.stopPropagation();
+        var full = b.parentElement.querySelector('.update-full');
+        if (!full) return;
+        var open = full.hidden;
+        full.hidden = !open;
+        b.textContent = open ? tr('收起') : tr('更多');
       };
     });
     $$('#panel-apps button[data-app-filter]').forEach(function (b) {
@@ -428,30 +472,68 @@
   // ---------- jobs & artifacts ----------
   loaders.jobs = async function () {
     var r = await Promise.all([api('/api/jobs'), api('/api/artifacts')]);
-    var jobs = r[0].slice().sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); }).slice(0, 5);
-    var arts = r[1].slice().sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); });
+    currentJobs = r[0].slice().sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); }).slice(0, 5);
+    jobArtifacts = r[1].slice().sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); });
+    renderJobs();
+  };
+
+  function renderJobs() {
     function tag(st) {
       var cls = st === 'succeeded' ? 'ok' : (st === 'failed' ? 'err' : '');
       return '<span class="tag ' + cls + '">' + esc(st) + '</span>';
     }
-    var jrows = jobs.map(function (j) {
+    var jrows = currentJobs.map(function (j) {
       return '<tr><td class="mono">' + esc(j.id) + '</td><td>' + tag(j.status) + '</td>' +
         '<td>' + esc(fmtTime(j.created_at)) + '</td><td>' + esc(fmtTime(j.finished_at)) + '</td>' +
         '<td class="mono">' + esc(j.error || '-') + '</td></tr>';
     }).join('');
-    var arows = arts.map(function (a) {
+
+    var total = jobArtifacts.length;
+    var pages = Math.max(1, Math.ceil(total / artPageSize));
+    if (artPage > pages) artPage = pages;
+    if (artPage < 1) artPage = 1;
+    var start = (artPage - 1) * artPageSize;
+    var pageArts = jobArtifacts.slice(start, start + artPageSize);
+    var arows = pageArts.map(function (a) {
       return '<tr><td data-i18n-skip>' + esc(a.display_name || a.bundle_id) + '</td><td>' + esc(a.version) + '</td>' +
-        '<td>' + esc(fmtTime(a.created_at)) + '</td><td>' + esc(fmtSize(a.size)) + '</td>' +
-        '<td><a class="link" href="/ipa/' + esc(a.id) + '.ipa">下载</a></td></tr>';
+        '<td>' + esc(fmtDateTime(a.created_at)) + '</td><td>' + esc(fmtSize(a.size)) + '</td>' +
+        '<td><a class="link" href="/ipa/' + esc(a.id) + '.ipa">下载</a></td>' +
+        '<td><button class="danger" data-action="delete-artifact" data-id="' + esc(a.id) + '">' + tr('删除') + '</button></td></tr>';
     }).join('');
+
     $('#panel-jobs').innerHTML = '<p class="section-kicker">JOBS & ARTIFACTS</p><h2>任务与产物</h2>' +
-      '<h2 style="margin-bottom:14px">已发布产物（每应用保留最近 ' + pub.keep_versions + ' 个版本）</h2>' +
-      '<table><thead><tr><th>应用</th><th>版本</th><th>签名时间</th><th>大小</th><th>下载</th></tr></thead><tbody>' +
-      (arows || '<tr><td colspan="5" class="muted">暂无产物</td></tr>') + '</tbody></table>' +
-      '<h2 style="margin-top:26px">签名任务（仅保留最近 5 条）</h2>' +
-      '<table><thead><tr><th>任务 ID</th><th>状态</th><th>创建</th><th>完成</th><th>错误</th></tr></thead><tbody>' +
-      (jrows || '<tr><td colspan="5" class="muted">暂无任务</td></tr>') + '</tbody></table>';
-  };
+      '<h2 style="margin-bottom:14px">' + tr('已发布产物') + '（' + tr('每应用保留') + ' ' + pub.keep_versions + ' ' + tr('个版本') + '）</h2>' +
+      '<table><thead><tr><th>' + tr('应用') + '</th><th>' + tr('版本') + '</th><th>' + tr('签名时间') + '</th><th>' + tr('大小') + '</th><th>' + tr('下载') + '</th><th>' + tr('操作') + '</th></tr></thead><tbody>' +
+      (arows || '<tr><td colspan="6" class="muted">' + tr('暂无产物') + '</td></tr>') + '</tbody></table>' +
+      (total > 0 ? '<div class="pager">' +
+        '<button data-page="prev"' + (artPage <= 1 ? ' disabled' : '') + '>' + tr('上一页') + '</button>' +
+        '<span class="pager-info">' + tr('第') + ' ' + artPage + ' / ' + pages + ' ' + tr('页') + ' · ' + tr('共') + ' ' + total + ' ' + tr('条') + '</span>' +
+        '<button data-page="next"' + (artPage >= pages ? ' disabled' : '') + '>' + tr('下一页') + '</button>' +
+        '<label class="pager-size">' + tr('每页') + '<select data-page-size>' +
+          [5, 10, 20, 50].map(function (n) { return '<option value="' + n + '"' + (n === artPageSize ? ' selected' : '') + '>' + n + '</option>'; }).join('') +
+        '</select>' + tr('条') + '</label>' +
+      '</div>' : '') +
+      '<h2 style="margin-top:26px">' + tr('签名任务') + '（' + tr('仅保留最近 5 条') + '）</h2>' +
+      '<table><thead><tr><th>' + tr('任务 ID') + '</th><th>' + tr('状态') + '</th><th>' + tr('创建') + '</th><th>' + tr('完成') + '</th><th>' + tr('错误') + '</th></tr></thead><tbody>' +
+      (jrows || '<tr><td colspan="5" class="muted">' + tr('暂无任务') + '</td></tr>') + '</tbody></table>';
+
+    $$('#panel-jobs button[data-page]').forEach(function (b) {
+      b.onclick = function () {
+        if (b.disabled) return;
+        if (b.dataset.page === 'prev' && artPage > 1) artPage--;
+        else if (b.dataset.page === 'next' && artPage < pages) artPage++;
+        renderJobs();
+      };
+    });
+    var sizeSel = $('#panel-jobs select[data-page-size]');
+    if (sizeSel) {
+      sizeSel.onchange = function () {
+        artPageSize = Number(sizeSel.value) || 10;
+        artPage = 1;
+        renderJobs();
+      };
+    }
+  }
 
   // ---------- settings centre ----------
   loaders.settings = async function () {
@@ -462,8 +544,8 @@
     if (!st.editable) {
       $('#panel-settings').innerHTML =
         '<p class="section-kicker">SETTINGS</p><h2>设置中心</h2>' +
-        '<div class="hint">当前站点标题：<b>' + esc(st.site_title) + '</b>。全局设置（标题、Bark 通知）仅管理员可修改。</div>' +
-        '<div class="hint" style="margin-top:14px">主题可在右上角的开关随时切换，偏好保存在当前浏览器。</div>';
+        '<div class="hint">当前站点标题：<b>' + esc(st.site_title) + '</b>。全局设置（标题、Bark 通知、版本保留）仅管理员可修改。</div>' +
+        '<div class="hint" style="margin-top:14px">当前每应用保留最近 <b>' + (pub.keep_versions || 2) + '</b> 个已签名版本。主题可在右上角的开关随时切换，偏好保存在当前浏览器。</div>';
       return;
     }
     $('#panel-settings').innerHTML =
@@ -471,6 +553,9 @@
       '<form id="settings-form" class="stack settings-card">' +
         '<div><h3>顶部标题</h3><p class="settings-note">自定义控制台左上角显示的名称，保存后立即生效。</p></div>' +
         '<label>站点标题<input name="site_title" maxlength="60" value="' + esc(st.site_title) + '" placeholder="iOS 自动签名"></label>' +
+        '<div class="settings-divider"></div>' +
+        '<div><h3>' + tr('版本保留') + '</h3><p class="settings-note">' + tr('每个应用最多保留的已签名版本数量；超过后最旧的版本会被自动清理，对应安装入口一并移除。') + '</p></div>' +
+        '<label>' + tr('每应用保留版本数') + '<input name="keep_versions" type="number" min="1" max="50" value="' + (st.keep_versions || pub.keep_versions || 2) + '"></label>' +
         '<div class="settings-divider"></div>' +
         '<div><h3>Bark 更新通知</h3><p class="settings-note">订阅源检测到新版本时，按应用推送一条「软件有更新」通知。首次添加软件源不会推送历史版本。</p></div>' +
         '<label class="inline"><input type="checkbox" name="bark_enabled" ' + (st.bark_enabled ? 'checked' : '') + '> 启用 Bark 推送</label>' +
@@ -487,13 +572,17 @@
       e.preventDefault();
       var f = e.target;
       try {
+        var keep = Number(f.keep_versions.value) || 2;
+        if (keep < 1) keep = 1;
+        if (keep > 50) keep = 50;
         var out = await api('/api/settings', json('PUT', {
           site_title: f.site_title.value,
           bark_enabled: f.bark_enabled.checked,
           bark_server: f.bark_server.value,
           bark_key: f.bark_key.value,
           bark_group: f.bark_group.value,
-          bark_sound: f.bark_sound.value
+          bark_sound: f.bark_sound.value,
+          keep_versions: keep
         }));
         applySiteTitle(out.site_title);
         toast('设置已保存');
@@ -720,6 +809,13 @@
           await api('/api/certificates/' + encodeURIComponent(id), { method: 'DELETE' });
           await loaders.certs();
           break;
+        case 'delete-artifact': {
+          if (!confirm(tr('删除该产物？对应的安装入口与安装包也会一并移除。'))) return;
+          await api('/api/artifacts/' + encodeURIComponent(id), { method: 'DELETE' });
+          toast(tr('已删除产物'));
+          await loaders.jobs();
+          break;
+        }
       }
     } catch (err) { fail(err); }
   });

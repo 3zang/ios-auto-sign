@@ -139,6 +139,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/jobs", s.auth.Require(s.listJobs))
 	mux.HandleFunc("GET /api/artifacts", s.auth.Require(s.listArtifacts))
+	mux.HandleFunc("DELETE /api/artifacts/{id}", s.auth.Require(s.deleteArtifact))
 
 	mux.HandleFunc("GET /api/settings", s.auth.Require(s.getSettings))
 	mux.HandleFunc("PUT /api/settings", s.auth.Require(s.saveSettings))
@@ -177,13 +178,27 @@ func (s *Server) siteTitle() string {
 	return t
 }
 
+// keepVersions returns the effective retention count for the public config:
+// the administrator setting wins over the config-file default.
+func (s *Server) keepVersions() int {
+	var n int
+	s.st.View(func(d *store.Data) { n = d.Settings.KeepVersions })
+	if n < 1 {
+		n = s.cfg.KeepVersions
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
 	base := requestBaseURL(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site_title":      s.siteTitle(),
 		"public_base_url": base,
 		"plist_mode":      s.gen.Mode(),
-		"keep_versions":   s.cfg.KeepVersions,
+		"keep_versions":   s.keepVersions(),
 		"default_source":  s.cfg.DefaultSourceURL,
 		"poll_minutes":    s.cfg.PollIntervalMinutes,
 		"zsign_path":      s.cfg.ZsignPath,
@@ -420,6 +435,7 @@ func (s *Server) listApps(w http.ResponseWriter, _ *http.Request, u *store.User)
 						"id": v.ID, "version": v.Version, "build_version": v.BuildVersion,
 						"date": v.Date, "download_url": v.DownloadURL, "size": v.Size,
 						"min_os_version": v.MinOSVersion, "detected_at": v.DetectedAt,
+						"localized_description": v.LocalizedDescription,
 					})
 				}
 			}
@@ -694,6 +710,27 @@ func (s *Server) listArtifacts(w http.ResponseWriter, _ *http.Request, u *store.
 	writeJSON(w, http.StatusOK, out)
 }
 
+// deleteArtifact removes one published artifact and its install data. Only the
+// artifact owner or an administrator may delete it; the signing manager also
+// removes the IPA file, icon file and cached manifest from disk.
+func (s *Server) deleteArtifact(w http.ResponseWriter, r *http.Request, u *store.User) {
+	id := r.PathValue("id")
+	a, ok := s.st.Artifact(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, errors.New("artifact not found"))
+		return
+	}
+	if u.Role != "admin" && a.UserID != u.ID {
+		writeError(w, http.StatusForbidden, errors.New("not permitted"))
+		return
+	}
+	if err := s.signing.DeleteArtifact(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // ---- public install surface ----
 
 // installApps lists artifacts visible to the signed-in user. All URLs are
@@ -830,12 +867,13 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 // ---- settings centre ----
 
 type settingsPayload struct {
-	SiteTitle   string `json:"site_title"`
-	BarkEnabled bool   `json:"bark_enabled"`
-	BarkServer  string `json:"bark_server"`
-	BarkKey     string `json:"bark_key"`
-	BarkSound   string `json:"bark_sound"`
-	BarkGroup   string `json:"bark_group"`
+	SiteTitle    string `json:"site_title"`
+	BarkEnabled  bool   `json:"bark_enabled"`
+	BarkServer   string `json:"bark_server"`
+	BarkKey      string `json:"bark_key"`
+	BarkSound    string `json:"bark_sound"`
+	BarkGroup    string `json:"bark_group"`
+	KeepVersions int    `json:"keep_versions"`
 }
 
 func (s *Server) currentSettings() store.Settings {
@@ -850,8 +888,9 @@ func (s *Server) currentSettings() store.Settings {
 // settingsView never leaks the Bark device key to non-administrators.
 func settingsView(cfg store.Settings, editable bool) map[string]any {
 	view := map[string]any{
-		"site_title": cfg.SiteTitle,
-		"editable":   editable,
+		"site_title":    cfg.SiteTitle,
+		"keep_versions": cfg.KeepVersions,
+		"editable":      editable,
 	}
 	if editable {
 		view["bark_enabled"] = cfg.BarkEnabled
@@ -892,14 +931,22 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request, u *store.U
 			return
 		}
 	}
+	keep := p.KeepVersions
+	if keep < 1 {
+		keep = 1
+	}
+	if keep > 50 {
+		keep = 50
+	}
 	next := store.Settings{
-		SiteTitle:   title,
-		BarkEnabled: p.BarkEnabled,
-		BarkServer:  server,
-		BarkKey:     strings.TrimSpace(p.BarkKey),
-		BarkSound:   strings.TrimSpace(p.BarkSound),
-		BarkGroup:   strings.TrimSpace(p.BarkGroup),
-		UpdatedAt:   time.Now(),
+		SiteTitle:    title,
+		BarkEnabled:  p.BarkEnabled,
+		BarkServer:   server,
+		BarkKey:      strings.TrimSpace(p.BarkKey),
+		BarkSound:    strings.TrimSpace(p.BarkSound),
+		BarkGroup:    strings.TrimSpace(p.BarkGroup),
+		KeepVersions: keep,
+		UpdatedAt:    time.Now(),
 	}
 	if err := s.st.Update(func(d *store.Data) error {
 		d.Settings = next
@@ -907,6 +954,15 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request, u *store.U
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	// Apply the new limit immediately so lowering it cleans up old artifacts
+	// right away instead of waiting for the next signing run. The signing
+	// manager is optional in some test harnesses, so guard the call.
+	if s.signing != nil {
+		if err := s.signing.TrimAll(keep); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, settingsView(s.currentSettings(), true))
 }
