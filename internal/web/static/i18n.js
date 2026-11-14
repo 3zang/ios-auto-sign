@@ -34,9 +34,6 @@
     // ---- theme switch labels ----
     'GitHub 仓库': 'GitHub repository',
     'GitHub 发布页': 'GitHub Releases',
-    '切换深色模式': 'Switch to dark mode',
-    '切换到深色模式': 'Switch to dark mode',
-    '切换到浅色模式': 'Switch to light mode',
 
     // ---- navigation ----
     '概览': 'Overview',
