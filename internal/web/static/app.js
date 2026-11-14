@@ -33,17 +33,23 @@
   function fmtSize(n) { return n ? (n / 1048576).toFixed(1) + ' MB' : '-'; }
 
   // Per-app version update detail: the latest version's changelog, truncated
-  // with a "更多" button. Clicking toggles the full text inline; hovering the
-  // truncated text also shows it via the native title tooltip.
+  // inline. When the text is long a "更多" button appears; hovering it shows a
+  // floating popup (appended to <body>, so it is never clipped by the card's
+  // overflow:hidden and never expands the card) with the full content.
   function updateDetailHTML(latest) {
     if (!latest || !latest.localized_description) return '';
     var full = String(latest.localized_description);
-    var trunc = full.length > 48 ? full.slice(0, 48) + '…' : full;
+    if (full.length <= 48) {
+      return '<div class="app-update">' +
+        '<span class="update-label">' + tr('更新详情') + '</span>' +
+        '<span class="update-text">' + esc(full) + '</span>' +
+      '</div>';
+    }
+    var trunc = full.slice(0, 48) + '…';
     return '<div class="app-update">' +
       '<span class="update-label">' + tr('更新详情') + '</span>' +
-      '<span class="update-text" title="' + esc(full) + '">' + esc(trunc) + '</span>' +
-      '<button class="more-btn" type="button">' + tr('更多') + '</button>' +
-      '<div class="update-full" hidden>' + esc(full) + '</div>' +
+      '<span class="update-text">' + esc(trunc) + '</span>' +
+      '<button class="more-btn" type="button" data-full="' + esc(full) + '">' + tr('更多') + '</button>' +
     '</div>';
   }
 
@@ -67,6 +73,44 @@
     toastTimer = setTimeout(function () { el.hidden = true; }, 4200);
   }
   function fail(e) { toast(e.message || String(e), true); }
+
+  // Floating tooltip for the "更多" button: shows the full update detail in a
+  // popup appended to <body>, so it is never clipped by the card's
+  // overflow:hidden and never expands the card itself.
+  var updateTipEl = null;
+  function showUpdateTip(btn) {
+    hideUpdateTip();
+    var text = btn.getAttribute('data-full');
+    if (!text) return;
+    var tip = document.createElement('div');
+    tip.className = 'update-pop';
+    tip.textContent = text;
+    document.body.appendChild(tip);
+    var r = btn.getBoundingClientRect();
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+    var left = r.left + r.width / 2 - tw / 2;
+    if (left < 8) left = 8;
+    if (left + tw > window.innerWidth - 8) left = window.innerWidth - tw - 8;
+    var top = r.top - th - 8;
+    if (top < 8) top = r.bottom + 8;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+    updateTipEl = tip;
+  }
+  function hideUpdateTip() {
+    if (updateTipEl) { updateTipEl.remove(); updateTipEl = null; }
+  }
+  var appsPanelEl = document.getElementById('panel-apps');
+  if (appsPanelEl) {
+    appsPanelEl.addEventListener('mouseover', function (e) {
+      var btn = e.target.closest && e.target.closest('.more-btn');
+      if (btn) showUpdateTip(btn);
+    });
+    appsPanelEl.addEventListener('mouseout', function (e) {
+      var btn = e.target.closest && e.target.closest('.more-btn');
+      if (btn) hideUpdateTip();
+    });
+  }
 
   var me = null, pub = {};
   var loaders = {};
@@ -355,16 +399,6 @@
           }));
           toast('配置已保存');
         } catch (err) { fail(err); }
-      };
-    });
-    $$('#panel-apps .more-btn').forEach(function (b) {
-      b.onclick = function (e) {
-        e.stopPropagation();
-        var full = b.parentElement.querySelector('.update-full');
-        if (!full) return;
-        var open = full.hidden;
-        full.hidden = !open;
-        b.textContent = open ? tr('收起') : tr('更多');
       };
     });
     $$('#panel-apps button[data-app-filter]').forEach(function (b) {
