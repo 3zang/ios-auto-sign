@@ -33,7 +33,7 @@
   function fmtSize(n) { return n ? (n / 1048576).toFixed(1) + ' MB' : '-'; }
 
   // Per-app version update detail: the latest version's changelog, truncated
-  // inline. When the text is long a "更多" button appears; hovering it shows a
+  // inline. When the text is long a "更多" button appears; clicking it opens a
   // floating popup (appended to <body>, so it is never clipped by the card's
   // overflow:hidden and never expands the card) with the full content.
   function updateDetailHTML(latest) {
@@ -49,7 +49,7 @@
     return '<div class="app-update">' +
       '<span class="update-label">' + tr('更新详情') + '</span>' +
       '<span class="update-text">' + esc(trunc) + '</span>' +
-      '<button class="more-btn" type="button" data-i18n-skip data-full="' + esc(full) + '" title="' + esc(full) + '">' + tr('更多') + '</button>' +
+      '<button class="more-btn" type="button" data-i18n-skip data-full="' + esc(full) + '" aria-expanded="false">' + tr('更多') + '</button>' +
     '</div>';
   }
 
@@ -74,54 +74,77 @@
   }
   function fail(e) { toast(e.message || String(e), true); }
 
-  // Floating tooltip for the "更多" button: shows the full update detail in a
-  // popup appended to <body>, so it is never clipped by the card's
-  // overflow:hidden and never expands the card itself. The button also keeps a
-  // native title attribute as a fallback when an older cached script is used.
-  var updateTipEl = null, updateTipHideTimer = null;
+  // Click-to-open popup for the "更多" button: the full changelog is shown in
+  // a themed popup appended to <body>, so it is never clipped by the card's
+  // overflow:hidden and never expands the card. No native title/hover tooltip.
+  var updateTipEl = null, updateTipBtn = null;
   function hideUpdateTip() {
-    clearTimeout(updateTipHideTimer);
     if (updateTipEl) { updateTipEl.remove(); updateTipEl = null; }
-  }
-  function scheduleHideTip() {
-    clearTimeout(updateTipHideTimer);
-    updateTipHideTimer = setTimeout(hideUpdateTip, 160);
+    if (updateTipBtn) {
+      updateTipBtn.textContent = tr('更多');
+      updateTipBtn.setAttribute('aria-expanded', 'false');
+      updateTipBtn.classList.remove('active');
+      updateTipBtn = null;
+    }
   }
   function showUpdateTip(btn) {
+    // Clicking the same button again closes the popup.
+    if (updateTipBtn === btn) { hideUpdateTip(); return; }
     hideUpdateTip();
     var text = btn.getAttribute('data-full');
     if (!text) return;
     var tip = document.createElement('div');
     tip.className = 'update-pop';
     tip.setAttribute('data-i18n-skip', ''); // keep the changelog verbatim in EN mode
-    tip.textContent = text;
-    // Let the pointer move onto the popup so long text can be read / copied.
-    tip.addEventListener('mouseenter', function () { clearTimeout(updateTipHideTimer); });
-    tip.addEventListener('mouseleave', scheduleHideTip);
+    var title = document.createElement('div');
+    title.className = 'update-pop-title';
+    title.textContent = tr('更新详情');
+    var body = document.createElement('div');
+    body.className = 'update-pop-body';
+    body.textContent = text;
+    tip.appendChild(title);
+    tip.appendChild(body);
     document.body.appendChild(tip);
+    // Document coordinates (the popup is absolutely positioned on <body>),
+    // so a long changelog can be read by scrolling the page instead of an
+    // inner scrollbar. Horizontal position is clamped to the viewport.
     var r = btn.getBoundingClientRect();
     var tw = tip.offsetWidth, th = tip.offsetHeight;
-    var left = r.left + r.width / 2 - tw / 2;
-    if (left < 8) left = 8;
-    if (left + tw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - tw - 8);
-    var top = r.top - th - 8;
-    if (top < 8) top = r.bottom + 8;
+    var vx = window.scrollX || window.pageXOffset || 0;
+    var vy = window.scrollY || window.pageYOffset || 0;
+    var left = r.left + vx + r.width / 2 - tw / 2;
+    if (left < vx + 8) left = vx + 8;
+    if (left + tw > vx + window.innerWidth - 8) left = Math.max(vx + 8, vx + window.innerWidth - tw - 8);
+    var top = r.top + vy - th - 8;
+    if (top < vy + 8) top = r.bottom + vy + 8;
     tip.style.left = left + 'px';
     tip.style.top = top + 'px';
     updateTipEl = tip;
+    updateTipBtn = btn;
+    btn.textContent = tr('收起');
+    btn.setAttribute('aria-expanded', 'true');
+    btn.classList.add('active');
   }
-  // Bind directly to each button (mouseenter/mouseleave do not bubble, so the
-  // popup can never be dismissed by a stray mouseout from a delegated handler).
   function bindUpdateTips() {
     $$('#panel-apps .more-btn').forEach(function (btn) {
-      btn.addEventListener('mouseenter', function () {
-        btn.removeAttribute('title'); // custom popup takes over; avoid double tooltip
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
         showUpdateTip(btn);
       });
-      btn.addEventListener('mouseleave', scheduleHideTip);
     });
   }
-  window.addEventListener('scroll', hideUpdateTip, true);
+  // Close on outside click, Escape or resize. The popup uses document
+  // coordinates, so scrolling keeps it next to its button and must not close
+  // it (long changelogs are read by scrolling the page).
+  document.addEventListener('click', function (e) {
+    if (!updateTipEl) return;
+    if (updateTipEl.contains(e.target)) return;
+    if (updateTipBtn && updateTipBtn.contains(e.target)) return;
+    hideUpdateTip();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') hideUpdateTip();
+  });
   window.addEventListener('resize', hideUpdateTip);
 
   var me = null, pub = {};
@@ -293,6 +316,7 @@
   };
 
   function renderApps(apps, icons, certs) {
+    hideUpdateTip(); // buttons are re-created below; drop any open popup
     var iconMap = {};
     icons.forEach(function (i) { iconMap[i.id] = i; });
     var iconOpts = icons.filter(function (i) { return i.enabled; }).map(function (i) {
