@@ -236,9 +236,9 @@ func TestStaticAssetsAndPageShell(t *testing.T) {
 		}
 	}
 	check("favicon.svg", get("/static/favicon.svg"), []string{"<svg", "linearGradient"})
-	check("index.html", get("/"), []string{"favicon.svg", "iconDialog", "brand-mark"})
+	check("index.html", get("/"), []string{"favicon.svg", "iconDialog", "brand-mark", "github-link", "https://github.com/3zang/ios-auto-sign"})
 	install := get("/install")
-	check("install.html", install, []string{"favicon.svg", "60vw", ">安装</a>"})
+	check("install.html", install, []string{"favicon.svg", "60vw", ">安装</a>", "github-link", "https://github.com/3zang/ios-auto-sign"})
 	if strings.Contains(install, "安装到 iOS") {
 		t.Error("install page still uses the old button label")
 	}
@@ -247,7 +247,7 @@ func TestStaticAssetsAndPageShell(t *testing.T) {
 		">下载</a>", ">安装</a>",
 	})
 	check("style.css", get("/static/style.css"), []string{
-		"width: 60vw", ".hero-panel", ".source-actions", ".icon-thumb",
+		"width: 60vw", ".hero-panel", ".source-actions", ".icon-thumb", ".github-link",
 	})
 }
 

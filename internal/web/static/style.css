@@ -195,6 +195,18 @@ button:disabled { opacity: .5; cursor: default; transform: none; }
   box-shadow: none;
 }
 .lang-switch:hover { border-color: var(--blue); color: var(--blue); background: var(--surface-solid); }
+/* Repository shortcut: same pill height as the language / theme controls */
+.github-link {
+  flex: 0 0 auto; display: inline-grid; place-items: center;
+  width: 30px; height: 28px; padding: 0;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--surface-solid); color: var(--text-secondary);
+  line-height: 1; text-decoration: none;
+  transition: border-color .18s ease, color .18s ease, background .18s ease;
+}
+.github-link:hover { border-color: var(--blue); color: var(--blue); background: var(--surface-solid); }
+.github-link:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.github-link svg { display: block; width: 16px; height: 16px; fill: currentColor; }
 .auth-lang-row { display: flex; justify-content: center; margin-top: 16px; }
 .auth-lang-row .lang-switch { min-width: 56px; height: 30px; }
 .head-actions { display: inline-flex; align-items: center; gap: 10px; flex: 0 0 auto; }

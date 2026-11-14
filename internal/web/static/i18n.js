@@ -32,6 +32,7 @@
     '登录控制台': 'Sign in to console',
 
     // ---- theme switch labels ----
+    'GitHub 仓库': 'GitHub repository',
     '切换深色模式': 'Switch to dark mode',
     '切换到深色模式': 'Switch to dark mode',
     '切换到浅色模式': 'Switch to light mode',
