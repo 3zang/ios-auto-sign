@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,6 +80,8 @@ type SyncResult struct {
 	Apps         int         `json:"apps"`
 	Versions     int         `json:"versions"`
 	NewVersions  int         `json:"new_versions"`
+	RenamedApps  int         `json:"renamed_apps,omitempty"`
+	RemovedApps  int         `json:"removed_apps,omitempty"`
 	HTTPStatus   int         `json:"http_status"`
 	SkippedByTag bool        `json:"skipped_by_etag"`
 	Updates      []AppUpdate `json:"updates,omitempty"`
@@ -92,12 +96,17 @@ func (s *Service) Sync(ctx context.Context, sourceID string) (*SyncResult, error
 		return nil, fmt.Errorf("source %s not found", sourceID)
 	}
 	res := &SyncResult{SourceID: sourceID}
+	previousCatalogue := len(src.Bundles)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src.URL, nil)
 	if err != nil {
 		return nil, err
 	}
-	if src.ETag != "" {
+	// Until we have persisted at least one catalogue we deliberately skip the
+	// conditional request: stores upgraded from older versions have no bundle
+	// list yet, so we need one full response to build the baseline and clean up
+	// apps that accumulated there.
+	if src.ETag != "" && len(src.Bundles) > 0 {
 		req.Header.Set("If-None-Match", src.ETag)
 	}
 	req.Header.Set("Accept", "application/json")
@@ -110,13 +119,22 @@ func (s *Service) Sync(ctx context.Context, sourceID string) (*SyncResult, error
 	res.HTTPStatus = resp.StatusCode
 	if resp.StatusCode == http.StatusNotModified {
 		res.SkippedByTag = true
-		_ = s.st.Update(func(d *store.Data) error {
-			if v := d.Sources[sourceID]; v != nil {
-				v.LastCheckedAt = time.Now()
-				v.LastError = ""
+		// A 304 means the catalogue is identical to the one we stored in
+		// Bundles, so the same set can safely drive stale-row cleanup.
+		seen := bundleSet(src.Bundles)
+		if len(seen) > 0 {
+			_ = s.st.Update(func(d *store.Data) error {
+				res.RemovedApps = pruneStale(d, sourceID, seen)
+				if v := d.Sources[sourceID]; v != nil {
+					v.LastCheckedAt = time.Now()
+					v.LastError = ""
+				}
+				return nil
+			})
+			if res.RemovedApps > 0 {
+				log.Printf("source %s: pruned %d stale app(s) during 304 sync", sourceID, res.RemovedApps)
 			}
-			return nil
-		})
+		}
 		return res, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -136,18 +154,22 @@ func (s *Service) Sync(ctx context.Context, sourceID string) (*SyncResult, error
 		s.setError(sourceID, "invalid JSON: "+err.Error())
 		return nil, fmt.Errorf("parse source %s: %w", sourceID, err)
 	}
-	if hash == src.LastHash {
-		_ = s.st.Update(func(d *store.Data) error {
-			if v := d.Sources[sourceID]; v != nil {
-				v.LastCheckedAt = time.Now()
-				v.ETag = resp.Header.Get("ETag")
-				v.LastError = ""
-			}
-			return nil
-		})
-		return res, nil
+	bundles := catalogueBundles(parsed.Apps)
+	if len(bundles) == 0 {
+		// A valid but empty catalogue is almost always a broken upstream
+		// response. Fail this attempt instead of wiping every stored app; the
+		// next poll retries with the previous state intact.
+		err := fmt.Errorf("source %s returned no apps with a bundle identifier", sourceID)
+		s.setError(sourceID, err.Error())
+		return nil, err
 	}
 
+	// The catalogue is the single source of truth. Both a changed and an
+	// unchanged body go through the same reconciliation, so stores upgraded
+	// from an older version (which still hold apps from before a bundle-ID
+	// rename) are cleaned up on the next poll even if upstream did not change.
+	changed := hash != src.LastHash
+	res.Changed = changed
 	newVersions := 0
 	// A brand-new source imports its whole catalogue at once. Those are not
 	// "updates", so notifications stay silent on the first successful sync to
@@ -155,21 +177,55 @@ func (s *Service) Sync(ctx context.Context, sourceID string) (*SyncResult, error
 	firstSync := src.LastHash == "" && src.LastChangedAt.IsZero()
 	err = s.st.Update(func(d *store.Data) error {
 		now := time.Now()
-		for _, a := range parsed.Apps {
-			if strings.TrimSpace(a.BundleIdentifier) == "" {
+		byBundle := map[string]*store.App{}
+		orphans := map[string]*store.App{}
+		for id, existing := range d.Apps {
+			if existing.SourceID != sourceID {
 				continue
 			}
-			var app *store.App
-			for _, existing := range d.Apps {
-				if existing.SourceID == sourceID && existing.BundleID == a.BundleIdentifier {
-					app = existing
-					break
+			if byBundle[existing.BundleID] == nil {
+				byBundle[existing.BundleID] = existing
+			}
+			orphans[id] = existing
+		}
+		existingCount := len(orphans)
+		for _, a := range parsed.Apps {
+			bundle := strings.TrimSpace(a.BundleIdentifier)
+			if bundle == "" {
+				continue
+			}
+			app := byBundle[bundle]
+			if app == nil {
+				// The publisher renamed the bundle identifier. Reuse the old
+				// row (and therefore its config, versions and artifacts) when
+				// exactly one unpublished app of this source has the same
+				// name; an ambiguous match is safer to import as a new app.
+				key := appNameKey(a.Name, bundle)
+				var candidate *store.App
+				ambiguous := false
+				for _, cand := range orphans {
+					if appNameKey(cand.Name, cand.BundleID) != key {
+						continue
+					}
+					if candidate != nil {
+						ambiguous = true
+						break
+					}
+					candidate = cand
+				}
+				if !ambiguous && candidate != nil {
+					app = candidate
+					app.BundleID = bundle
+					byBundle[bundle] = app
+					res.RenamedApps++
 				}
 			}
 			if app == nil {
-				app = &store.App{ID: store.NewID(), SourceID: sourceID, BundleID: a.BundleIdentifier}
+				app = &store.App{ID: store.NewID(), SourceID: sourceID, BundleID: bundle}
 				d.Apps[app.ID] = app
+				byBundle[bundle] = app
 			}
+			delete(orphans, app.ID)
 			app.Name = a.Name
 			app.DeveloperName = a.DeveloperName
 			app.Subtitle = a.Subtitle
@@ -202,25 +258,47 @@ func (s *Service) Sync(ctx context.Context, sourceID string) (*SyncResult, error
 				d.Versions[ver.ID] = ver
 				res.Versions++
 				newVersions++
-				if !firstSync {
+				if changed && !firstSync {
 					name := a.Name
 					if strings.TrimSpace(name) == "" {
-						name = a.BundleIdentifier
+						name = bundle
 					}
 					res.Updates = append(res.Updates, AppUpdate{
-						AppName: name, BundleID: a.BundleIdentifier,
+						AppName: name, BundleID: bundle,
 						AppID: app.ID, IconURL: a.IconURL,
 						Version: v.Version, SourceName: src.Name,
 					})
 				}
 			}
 		}
+		staleIDs := map[string]bool{}
+		for id := range orphans {
+			staleIDs[id] = true
+		}
+		// Compare against the last known catalogue, not against stored rows,
+		// so a genuinely shrunken source can still be cleaned on the following
+		// (stable) sync. Losing more than half at once looks like a partial
+		// upstream response: Bundles is updated so the UI hides the rows, but
+		// their apps and configs are kept until the next full response.
+		base := previousCatalogue
+		if base == 0 { // store written by an older build
+			base = existingCount
+		}
+		if base > 0 && len(bundles)*2 < base {
+			log.Printf("source %s: catalogue shrank from %d to %d apps, deferring removal of %d rows",
+				sourceID, base, len(bundles), len(staleIDs))
+		} else {
+			res.RemovedApps = removeApps(d, staleIDs)
+		}
 		if v := d.Sources[sourceID]; v != nil {
 			v.ETag = resp.Header.Get("ETag")
-			v.LastHash = hash
+			v.Bundles = bundles
 			v.LastCheckedAt = now
-			v.LastChangedAt = now
 			v.LastError = ""
+			if changed {
+				v.LastHash = hash
+				v.LastChangedAt = now
+			}
 		}
 		return nil
 	})
@@ -228,8 +306,10 @@ func (s *Service) Sync(ctx context.Context, sourceID string) (*SyncResult, error
 		res.Updates = nil
 		return nil, err
 	}
+	if res.RenamedApps > 0 || res.RemovedApps > 0 {
+		log.Printf("source %s: %d renamed bundle(s), %d removed app(s)", sourceID, res.RenamedApps, res.RemovedApps)
+	}
 	res.NewVersions = newVersions
-	res.Changed = true
 	if s.hook != nil {
 		for _, up := range res.Updates {
 			hctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -238,6 +318,93 @@ func (s *Service) Sync(ctx context.Context, sourceID string) (*SyncResult, error
 		}
 	}
 	return res, nil
+}
+
+// catalogueBundles returns the sorted, de-duplicated bundle identifiers of a
+// parsed feed. The slice is persisted on the source so a later 304 response
+// (which has no body) can still tell which apps are currently published.
+func catalogueBundles(apps []altApp) []string {
+	set := map[string]bool{}
+	for _, a := range apps {
+		if b := strings.TrimSpace(a.BundleIdentifier); b != "" {
+			set[b] = true
+		}
+	}
+	list := make([]string, 0, len(set))
+	for b := range set {
+		list = append(list, b)
+	}
+	sort.Strings(list)
+	return list
+}
+
+func bundleSet(bundles []string) map[string]bool {
+	set := make(map[string]bool, len(bundles))
+	for _, b := range bundles {
+		if b != "" {
+			set[b] = true
+		}
+	}
+	return set
+}
+
+// appNameKey is only used to recognise a bundle-ID rename. Falling back to the
+// bundle identifier keeps unnamed apps from all collapsing onto one key.
+func appNameKey(name, bundle string) string {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return strings.ToLower(strings.TrimSpace(bundle))
+	}
+	return n
+}
+
+// removeApps drops apps together with their versions and per-user configs.
+// Signed artifacts and sign jobs are deliberately kept: an IPA that was
+// already published must stay installable after the upstream removes the app.
+func removeApps(d *store.Data, ids map[string]bool) int {
+	if len(ids) == 0 {
+		return 0
+	}
+	removed := 0
+	for id := range ids {
+		if d.Apps[id] != nil {
+			delete(d.Apps, id)
+			removed++
+		}
+	}
+	for vid, v := range d.Versions {
+		if ids[v.AppID] {
+			delete(d.Versions, vid)
+		}
+	}
+	for key, c := range d.AppConfigs {
+		if ids[c.AppID] {
+			delete(d.AppConfigs, key)
+		}
+	}
+	return removed
+}
+
+// pruneStale removes the apps of one source that are absent from the last
+// known catalogue. It is used for 304 responses, where no fresh body exists.
+func pruneStale(d *store.Data, sourceID string, seen map[string]bool) int {
+	total := 0
+	ids := map[string]bool{}
+	for id, a := range d.Apps {
+		if a.SourceID != sourceID {
+			continue
+		}
+		total++
+		if !seen[a.BundleID] {
+			ids[id] = true
+		}
+	}
+	if total > 0 && len(ids)*2 > total {
+		log.Printf("source %s: skipping bulk prune (%d of %d apps) until a full catalogue is seen",
+			sourceID, len(ids), total)
+		return 0
+	}
+	return removeApps(d, ids)
 }
 
 func (s *Service) setError(sourceID, msg string) {

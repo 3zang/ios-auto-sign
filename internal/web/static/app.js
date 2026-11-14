@@ -354,8 +354,11 @@
       var latest = versions.length ? versions[0] : null;
       var icon = a.icon_url ? '<img src="' + esc(a.icon_url) + '" alt="">' : '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">';
       var src = c.icon_source || 'original';
+      var sourceBadge = '<span class="source-badge" data-i18n-skip>' +
+        esc(tr('来自')) + ' ' + esc(a.source_name || tr('未知源')) + '</span>';
       return '<div class="card">' +
-        '<div class="card-head">' + icon + '<div><div class="name" data-i18n-skip>' + esc(a.name) + '</div>' +
+        '<div class="card-head">' + icon + '<div>' +
+          '<div class="app-title-row"><div class="name" data-i18n-skip>' + esc(a.name) + '</div>' + sourceBadge + '</div>' +
           '<div class="sub mono">' + esc(a.bundle_id) + '</div>' +
           '<div class="sub">' + (latest ? '版本 ' + esc(latest.version) : '暂无版本') + '</div>' +
           (latest ? '<div class="sub">' + tr('更新时间') + '：' + esc(fmtDateTime(latest.detected_at || latest.date)) + '</div>' : '') +

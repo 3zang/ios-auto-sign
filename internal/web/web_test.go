@@ -250,3 +250,50 @@ func TestStaticAssetsAndPageShell(t *testing.T) {
 		"width: 60vw", ".hero-panel", ".source-actions", ".icon-thumb",
 	})
 }
+
+// The "All" tab must follow the source catalogue, and every card needs the
+// source name for its origin badge. Sources without a snapshot (older stores)
+// keep their previous behaviour until the next sync fills it in.
+func TestListAppsHidesStaleRowsAndReportsSource(t *testing.T) {
+	s, st := newTestServer(t)
+	if err := st.Update(func(d *store.Data) error {
+		d.Sources["s1"] = &store.Source{ID: "s1", Name: "AltGallery", Bundles: []string{"com.current"}}
+		d.Apps["a1"] = &store.App{ID: "a1", SourceID: "s1", BundleID: "com.current", Name: "Current"}
+		d.Apps["a2"] = &store.App{ID: "a2", SourceID: "s1", BundleID: "com.old", Name: "Stale"}
+		d.Sources["s2"] = &store.Source{ID: "s2", Name: "LegacySource"}
+		d.Apps["a3"] = &store.App{ID: "a3", SourceID: "s2", BundleID: "com.legacy", Name: "Legacy"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	s.listApps(rr, httptest.NewRequest(http.MethodGet, "/api/apps", nil), &store.User{ID: "u1", Role: "user"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var out []struct {
+		App map[string]any `json:"app"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("got %d rows, want 2 (stale app should be hidden)", len(out))
+	}
+	for _, row := range out {
+		switch row.App["id"] {
+		case "a1":
+			if row.App["source_name"] != "AltGallery" {
+				t.Errorf("source_name = %v, want AltGallery", row.App["source_name"])
+			}
+		case "a3":
+			if row.App["source_name"] != "LegacySource" {
+				t.Errorf("source_name = %v, want LegacySource", row.App["source_name"])
+			}
+		case "a2":
+			t.Error("app removed from the catalogue is still listed")
+		default:
+			t.Errorf("unexpected app %v", row.App["id"])
+		}
+	}
+}

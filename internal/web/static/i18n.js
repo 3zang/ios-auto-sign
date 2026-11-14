@@ -153,6 +153,8 @@
     '还没有已配置的应用，切换到「全部」勾选并保存配置。': 'No configured apps yet. Switch to All, enable one and save.',
     '暂无应用，请先在「订阅源」中刷新元数据。': 'No apps yet. Refresh a source first.',
     '暂无版本': 'No versions',
+    '来自': 'From',
+    '未知源': 'Unknown source',
     '版本': 'Version',
     '配置签名元数据': 'Configure signing metadata',
     '显示名称': 'Display name',

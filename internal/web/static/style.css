@@ -293,6 +293,15 @@ tr:last-child td { border-bottom: none; }
 .card-head { position: relative; z-index: 1; display: flex; gap: 14px; align-items: center; }
 .card-head img { width: 56px; height: 56px; border-radius: 16px; object-fit: cover; background: var(--surface-muted); box-shadow: 0 8px 20px rgba(0, 0, 0, .1); }
 .card-head .name { font-weight: 650; font-size: 17px; letter-spacing: -.02em; }
+.app-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+.source-badge {
+  display: inline-block; max-width: 100%; padding: 1px 8px;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--surface-muted); color: var(--text-secondary);
+  font-size: 10px; font-weight: 600; line-height: 1.6;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  vertical-align: 1px;
+}
 .card-head .sub { color: var(--text-secondary); font-size: 12px; }
 #panel-apps .card-head > div { min-width: 0; flex: 1; }
 .card-delete { align-self: flex-start; margin-left: auto; flex: 0 0 auto; padding: 5px 10px; font-size: 12px; white-space: nowrap; }

@@ -32,6 +32,11 @@ type Session struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// Source describes one upstream AltStore-format subscription. Bundles is the
+// sorted set of bundle identifiers seen in the last successfully parsed
+// catalogue: it lets us tell an app that disappeared (or was renamed) upstream
+// from one that is still published, and lets the UI hide stale rows even when
+// the upstream answers with a 304.
 type Source struct {
 	ID              string    `json:"id"`
 	OwnerID         string    `json:"owner_id"`
@@ -41,6 +46,7 @@ type Source struct {
 	IntervalMinutes int       `json:"interval_minutes"`
 	ETag            string    `json:"etag"`
 	LastHash        string    `json:"last_hash"`
+	Bundles         []string  `json:"bundles,omitempty"`
 	LastCheckedAt   time.Time `json:"last_checked_at"`
 	LastChangedAt   time.Time `json:"last_changed_at"`
 	LastError       string    `json:"last_error"`

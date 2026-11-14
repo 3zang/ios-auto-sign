@@ -396,7 +396,9 @@ func (s *Server) updateSource(w http.ResponseWriter, r *http.Request, u *store.U
 		v.Name, v.URL, v.Enabled = p.Name, strings.TrimSpace(p.URL), p.Enabled
 		v.IntervalMinutes = p.IntervalMinutes
 		if v.URL != src.URL {
-			v.ETag, v.LastHash = "", ""
+			// The old catalogue no longer describes the new endpoint; keeping
+			// it would hide every app imported from the new source.
+			v.ETag, v.LastHash, v.Bundles = "", "", nil
 		}
 		return nil
 	}); err != nil {
@@ -475,7 +477,26 @@ func (s *Server) listApps(w http.ResponseWriter, _ *http.Request, u *store.User)
 	}
 	out := []item{}
 	s.st.View(func(d *store.Data) {
+		// Sources upgraded from older builds have no catalogue snapshot yet;
+		// for those we keep showing everything until the next sync fills it in.
+		catalogues := map[string]map[string]bool{}
+		for id, src := range d.Sources {
+			if len(src.Bundles) > 0 {
+				set := map[string]bool{}
+				for _, b := range src.Bundles {
+					set[b] = true
+				}
+				catalogues[id] = set
+			}
+		}
 		for _, a := range d.Apps {
+			if set := catalogues[a.SourceID]; set != nil && !set[a.BundleID] {
+				continue // no longer published by its source
+			}
+			sourceName := ""
+			if src := d.Sources[a.SourceID]; src != nil {
+				sourceName = src.Name
+			}
 			versions := []map[string]any{}
 			for _, v := range d.Versions {
 				if v.AppID == a.ID {
@@ -493,8 +514,9 @@ func (s *Server) listApps(w http.ResponseWriter, _ *http.Request, u *store.User)
 			}
 			out = append(out, item{
 				App: map[string]any{
-					"id": a.ID, "source_id": a.SourceID, "bundle_id": a.BundleID,
-					"name": a.Name, "developer_name": a.DeveloperName,
+					"id": a.ID, "source_id": a.SourceID, "source_name": sourceName,
+					"bundle_id": a.BundleID,
+					"name":      a.Name, "developer_name": a.DeveloperName,
 					"subtitle": a.Subtitle, "icon_url": a.IconURL, "updated_at": a.UpdatedAt,
 				},
 				Versions: versions, Config: cfg,
