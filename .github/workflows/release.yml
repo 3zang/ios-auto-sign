@@ -43,10 +43,20 @@ jobs:
           go test ./...
 
       - name: Cross-compile from source
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          LDFLAGS='-s -w'
+          # Resolve the release tag so the binary can display it in the UI and
+          # use it as the static asset cache-busting key.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${INPUT_TAG}"
+          fi
+          if [ -z "$VERSION" ]; then VERSION="dev"; fi
+          LDFLAGS="-s -w -X ios-auto-sign/internal/web.Version=$VERSION"
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o dist/ios-auto-sign-windows-amd64.exe ./cmd/server
           CGO_ENABLED=0 GOOS=linux   GOARCH=amd64  go build -trimpath -ldflags "$LDFLAGS" -o dist/ios-auto-sign-linux-amd64       ./cmd/server
           CGO_ENABLED=0 GOOS=linux   GOARCH=arm64  go build -trimpath -ldflags "$LDFLAGS" -o dist/ios-auto-sign-linux-arm64       ./cmd/server

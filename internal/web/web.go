@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +31,34 @@ import (
 
 //go:embed static/*
 var staticFS embed.FS
+
+// staticAssetRE matches a /static/... path inside an HTML attribute so the
+// server can append the build version as a cache-busting query parameter.
+var staticAssetRE = regexp.MustCompile(`(/static/[A-Za-z0-9._/-]+)`)
+
+// Version is injected at build time with
+//   -ldflags "-X ios-auto-sign/internal/web.Version=v1.0.5"
+// It is shown in the top bar and used as a cache-busting key for static
+// assets, so a newly deployed binary never serves a stale cached app.js.
+var Version = "dev"
+
+// versionKey returns a HTML/URL-safe form of Version for use in attribute
+// values and query strings.
+func versionKey() string {
+	var b strings.Builder
+	for _, r := range Version {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "dev"
+	}
+	return b.String()
+}
 
 type Server struct {
 	cfg      config.Config
@@ -106,7 +135,18 @@ func (s *Server) Handler() http.Handler {
 	if err != nil {
 		panic(err)
 	}
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
+	fileServer := http.StripPrefix("/static/", http.FileServer(http.FS(sub)))
+	mux.Handle("GET /static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Assets requested with an explicit version key are immutable: a new
+		// release changes the key, so the browser fetches fresh files instead
+		// of reusing a stale cached app.js / style.css.
+		if r.URL.Query().Get("v") != "" {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		fileServer.ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("GET /", s.servePage("index.html"))
 	mux.HandleFunc("GET /install", s.servePage("install.html"))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -127,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/apps", s.auth.Require(s.listApps))
 	mux.HandleFunc("PUT /api/apps/{id}/config", s.auth.Require(s.saveAppConfig))
+	mux.HandleFunc("DELETE /api/apps/{id}/config", s.auth.Require(s.deleteAppConfig))
 	mux.HandleFunc("POST /api/apps/{id}/sign", s.auth.Require(s.signApp))
 
 	mux.HandleFunc("GET /api/icons", s.auth.Require(s.listIcons))
@@ -163,9 +204,15 @@ func (s *Server) servePage(name string) http.HandlerFunc {
 			http.Error(w, "page not found", http.StatusNotFound)
 			return
 		}
+		// Append the build version to every static asset URL so a newly
+		// deployed binary can never be paired with a stale cached app.js.
+		// __VERSION__ is also used for the visible version badge.
+		v := versionKey()
+		page := staticAssetRE.ReplaceAllString(string(b), "${1}?v="+v)
+		page = strings.ReplaceAll(page, "__VERSION__", v)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		_, _ = w.Write(b)
+		_, _ = io.WriteString(w, page)
 	}
 }
 
@@ -196,6 +243,7 @@ func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
 	base := requestBaseURL(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site_title":      s.siteTitle(),
+		"version":         versionKey(),
 		"public_base_url": base,
 		"plist_mode":      s.gen.Mode(),
 		"keep_versions":   s.keepVersions(),
@@ -512,6 +560,26 @@ func (s *Server) saveAppConfig(w http.ResponseWriter, r *http.Request, u *store.
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// deleteAppConfig removes the caller's configuration for an app. Apps and
+// versions are subscription metadata shared by all users, so they are kept:
+// the card simply moves back to the unconfigured state and can be set up
+// again. Published artifacts are intentionally preserved.
+func (s *Server) deleteAppConfig(w http.ResponseWriter, r *http.Request, u *store.User) {
+	appID := r.PathValue("id")
+	key := store.ConfigKey(u.ID, appID)
+	if err := s.st.Update(func(d *store.Data) error {
+		if d.AppConfigs[key] == nil {
+			return errors.New("configuration not found")
+		}
+		delete(d.AppConfigs, key)
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) signApp(w http.ResponseWriter, r *http.Request, u *store.User) {

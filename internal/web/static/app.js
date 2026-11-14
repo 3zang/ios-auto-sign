@@ -49,7 +49,7 @@
     return '<div class="app-update">' +
       '<span class="update-label">' + tr('更新详情') + '</span>' +
       '<span class="update-text">' + esc(trunc) + '</span>' +
-      '<button class="more-btn" type="button" data-full="' + esc(full) + '">' + tr('更多') + '</button>' +
+      '<button class="more-btn" type="button" data-i18n-skip data-full="' + esc(full) + '" title="' + esc(full) + '">' + tr('更多') + '</button>' +
     '</div>';
   }
 
@@ -76,41 +76,53 @@
 
   // Floating tooltip for the "更多" button: shows the full update detail in a
   // popup appended to <body>, so it is never clipped by the card's
-  // overflow:hidden and never expands the card itself.
-  var updateTipEl = null;
+  // overflow:hidden and never expands the card itself. The button also keeps a
+  // native title attribute as a fallback when an older cached script is used.
+  var updateTipEl = null, updateTipHideTimer = null;
+  function hideUpdateTip() {
+    clearTimeout(updateTipHideTimer);
+    if (updateTipEl) { updateTipEl.remove(); updateTipEl = null; }
+  }
+  function scheduleHideTip() {
+    clearTimeout(updateTipHideTimer);
+    updateTipHideTimer = setTimeout(hideUpdateTip, 160);
+  }
   function showUpdateTip(btn) {
     hideUpdateTip();
     var text = btn.getAttribute('data-full');
     if (!text) return;
     var tip = document.createElement('div');
     tip.className = 'update-pop';
+    tip.setAttribute('data-i18n-skip', ''); // keep the changelog verbatim in EN mode
     tip.textContent = text;
+    // Let the pointer move onto the popup so long text can be read / copied.
+    tip.addEventListener('mouseenter', function () { clearTimeout(updateTipHideTimer); });
+    tip.addEventListener('mouseleave', scheduleHideTip);
     document.body.appendChild(tip);
     var r = btn.getBoundingClientRect();
     var tw = tip.offsetWidth, th = tip.offsetHeight;
     var left = r.left + r.width / 2 - tw / 2;
     if (left < 8) left = 8;
-    if (left + tw > window.innerWidth - 8) left = window.innerWidth - tw - 8;
+    if (left + tw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - tw - 8);
     var top = r.top - th - 8;
     if (top < 8) top = r.bottom + 8;
     tip.style.left = left + 'px';
     tip.style.top = top + 'px';
     updateTipEl = tip;
   }
-  function hideUpdateTip() {
-    if (updateTipEl) { updateTipEl.remove(); updateTipEl = null; }
-  }
-  var appsPanelEl = document.getElementById('panel-apps');
-  if (appsPanelEl) {
-    appsPanelEl.addEventListener('mouseover', function (e) {
-      var btn = e.target.closest && e.target.closest('.more-btn');
-      if (btn) showUpdateTip(btn);
-    });
-    appsPanelEl.addEventListener('mouseout', function (e) {
-      var btn = e.target.closest && e.target.closest('.more-btn');
-      if (btn) hideUpdateTip();
+  // Bind directly to each button (mouseenter/mouseleave do not bubble, so the
+  // popup can never be dismissed by a stray mouseout from a delegated handler).
+  function bindUpdateTips() {
+    $$('#panel-apps .more-btn').forEach(function (btn) {
+      btn.addEventListener('mouseenter', function () {
+        btn.removeAttribute('title'); // custom popup takes over; avoid double tooltip
+        showUpdateTip(btn);
+      });
+      btn.addEventListener('mouseleave', scheduleHideTip);
     });
   }
+  window.addEventListener('scroll', hideUpdateTip, true);
+  window.addEventListener('resize', hideUpdateTip);
 
   var me = null, pub = {};
   var loaders = {};
@@ -281,6 +293,8 @@
   };
 
   function renderApps(apps, icons, certs) {
+    var iconMap = {};
+    icons.forEach(function (i) { iconMap[i.id] = i; });
     var iconOpts = icons.filter(function (i) { return i.enabled; }).map(function (i) {
       return '<option value="' + esc(i.id) + '">' + esc(i.label || i.url) + '</option>';
     }).join('');
@@ -321,7 +335,9 @@
           '<div class="sub mono">' + esc(a.bundle_id) + '</div>' +
           '<div class="sub">' + (latest ? '版本 ' + esc(latest.version) : '暂无版本') + '</div>' +
           (latest ? '<div class="sub">' + tr('更新时间') + '：' + esc(fmtDateTime(latest.detected_at || latest.date)) + '</div>' : '') +
-          updateDetailHTML(latest) + '</div></div>' +
+          updateDetailHTML(latest) + '</div>' +
+          (row.config ? '<button type="button" class="danger card-delete" data-action="delete-app-config" data-id="' + esc(a.id) + '">' + tr('删除配置') + '</button>' : '') +
+        '</div>' +
         '<div class="card-body">' +
           '<details><summary>配置签名元数据</summary>' +
           '<form class="app-config stack" data-id="' + esc(a.id) + '" style="margin-top:12px">' +
@@ -332,7 +348,10 @@
               '<option value="library"' + (src === 'library' ? ' selected' : '') + '>管理员图标库</option>' +
               '<option value="custom"' + (src === 'custom' ? ' selected' : '') + '>自定义 URL</option>' +
             '</select></label>' +
-            '<label class="icon-lib">选择图标<select name="icon_library_id"><option value="">未选择</option>' + iconOpts + '</select></label>' +
+            '<label class="icon-lib"><span class="icon-lib-label">' + tr('选择图标') + '</span>' +
+              '<select name="icon_library_id"><option value="">未选择</option>' + iconOpts + '</select>' +
+              '<span class="icon-lib-current"><img class="icon-lib-preview" alt="' + esc(tr('图标预览')) + '" hidden>' +
+              '<span class="icon-lib-name"></span></span></label>' +
             '<label class="icon-custom">自定义图标 URL<input name="icon_custom_url" value="' + esc(c.icon_custom_url || '') + '" placeholder="https://.../icon.png"></label>' +
             '<label>证书（p12 + 描述文件）<select name="certificate_id"><option value="">未选择</option>' + certOpts + '</select></label>' +
             '<label>包名覆盖<input name="bundle_id_override" value="' + esc(c.bundle_id_override || '') + '" placeholder="留空则使用 ' + esc(a.bundle_id) + '"></label>' +
@@ -366,6 +385,7 @@
           ? '<div class="muted">还没有已配置的应用，切换到「全部」勾选并保存配置。</div>'
           : '<div class="muted">暂无应用，请先在「订阅源」中刷新元数据。</div>')) + '</div>';
 
+    bindUpdateTips();
     $$('.app-config').forEach(function (f) {
       var c = f.dataset.id;
       // restore current selections that were rendered as plain options
@@ -373,6 +393,23 @@
       var cfg = (row && row.config) || {};
       if (cfg.icon_library_id) f.icon_library_id.value = cfg.icon_library_id;
       if (cfg.certificate_id) f.certificate_id.value = cfg.certificate_id;
+      var iconPreview = f.querySelector('.icon-lib-preview');
+      var iconName = f.querySelector('.icon-lib-name');
+      function updateIconPreview() {
+        var item = iconMap[f.icon_library_id.value];
+        if (!item) {
+          iconPreview.hidden = true;
+          iconPreview.removeAttribute('src');
+          iconName.textContent = '';
+          return;
+        }
+        iconPreview.hidden = false;
+        iconPreview.src = item.url;
+        iconName.textContent = item.label || item.url;
+      }
+      iconPreview.onerror = function () { iconPreview.hidden = true; };
+      f.icon_library_id.onchange = updateIconPreview;
+      updateIconPreview();
       function toggle() {
         f.querySelector('.icon-lib').hidden = f.icon_source.value !== 'library';
         f.querySelector('.icon-custom').hidden = f.icon_source.value !== 'custom';
@@ -834,6 +871,12 @@
           toast('已创建签名任务 ' + j.job_id);
           break;
         }
+        case 'delete-app-config':
+          if (!confirm(tr('删除该应用的配置？应用与已发布产物会保留，可在「全部」中重新配置。'))) return;
+          await api('/api/apps/' + encodeURIComponent(id) + '/config', { method: 'DELETE' });
+          toast(tr('已删除配置'));
+          await loaders.apps();
+          break;
         case 'delete-icon':
           await api('/api/icons/' + encodeURIComponent(id), { method: 'DELETE' });
           await loaders.icons();
@@ -874,6 +917,10 @@
     $('#who').textContent = me.username;
     try { pub = await api('/api/config/public'); } catch (e) { pub = {}; }
     applySiteTitle(pub.site_title);
+    if (pub.version) {
+      var badge = $('#app-version');
+      if (badge) badge.textContent = pub.version;
+    }
     $('#logout').onclick = async function () {
       await api('/api/auth/logout', json('POST', {}));
       location.reload();
