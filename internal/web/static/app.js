@@ -33,22 +33,13 @@
   function fmtSize(n) { return n ? (n / 1048576).toFixed(1) + ' MB' : '-'; }
 
   // Per-app version update detail: the latest version's changelog, truncated
-  // inline. When the text is long a "更多" button appears; clicking it opens a
-  // floating popup (appended to <body>, so it is never clipped by the card's
-  // overflow:hidden and never expands the card) with the full content.
+  // The card only shows a "更多" button; clicking it opens a floating popup
+  // (appended to <body>, so it is never clipped by the card's overflow:hidden
+  // and never expands the card) with the full changelog. No inline preview.
   function updateDetailHTML(latest) {
     if (!latest || !latest.localized_description) return '';
     var full = String(latest.localized_description);
-    if (full.length <= 48) {
-      return '<div class="app-update">' +
-        '<span class="update-label">' + tr('更新详情') + '</span>' +
-        '<span class="update-text">' + esc(full) + '</span>' +
-      '</div>';
-    }
-    var trunc = full.slice(0, 48) + '…';
     return '<div class="app-update">' +
-      '<span class="update-label">' + tr('更新详情') + '</span>' +
-      '<span class="update-text">' + esc(trunc) + '</span>' +
       '<button class="more-btn" type="button" data-i18n-skip data-full="' + esc(full) + '" aria-expanded="false">' + tr('更多') + '</button>' +
     '</div>';
   }

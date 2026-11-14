@@ -368,10 +368,8 @@ tr:last-child td { border-bottom: none; }
 details > summary { cursor: pointer; color: var(--blue); font-size: 13px; font-weight: 600; padding: 4px 0; }
 details[open] > summary { margin-bottom: 6px; }
 
-/* per-app version update detail: truncated text + "更多" toggle */
+/* per-app version update detail: a "更多" button opens the full changelog popup */
 .app-update { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; }
-.update-label { color: var(--text-tertiary); font-weight: 600; }
-.update-text { color: var(--text-secondary); max-width: 100%; }
 .more-btn { border: 0; background: transparent; color: var(--blue); padding: 0 2px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .more-btn:hover, .more-btn.active { border-color: transparent; background: transparent; color: var(--blue-hover); }
 /* Themed glass popup: same surface, border, radius and blur as .panel.
