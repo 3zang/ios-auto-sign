@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
 
@@ -51,24 +52,16 @@ func main() {
 	signMgr := signing.New(st, cfg, key, client)
 	server := web.New(cfg, st, authMgr, sourceSvc, signMgr, gen, key, client)
 
-	// Every newly discovered version produces one Bark message naming the app
-	// and carrying that app's icon. Delivery failures are logged and never
-	// fail the sync itself.
+	// Notifications are driven by sync results from pollLoop and the HTTP
+	// handlers, not by an implicit source hook, so background detection and
+	// manual "立即执行" take exactly the same path.
 	bark := notify.New(st, client)
-	sourceSvc.SetUpdateHook(func(ctx context.Context, up source.AppUpdate) {
-		if err := bark.NotifyUpdate(ctx, notify.Update{
-			AppName: up.AppName, BundleID: up.BundleID, AppID: up.AppID,
-			Version: up.Version, SourceName: up.SourceName, IconURL: up.IconURL,
-		}); err != nil {
-			log.Printf("bark notification: %v", err)
-		}
-	})
 
 	ensureDefaultSource(st, cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	signMgr.Start(ctx)
-	go pollLoop(ctx, cfg, sourceSvc, signMgr)
+	go pollLoop(ctx, cfg, st, sourceSvc, signMgr, bark)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Listen,
@@ -115,19 +108,52 @@ func ensureDefaultSource(st *store.Store, cfg config.Config) {
 	})
 }
 
-func pollLoop(ctx context.Context, cfg config.Config, src *source.Service, sign *signing.Manager) {
-	run := func() {
-		c, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer cancel()
-		results, errs := src.SyncAll(c)
-		for _, e := range errs {
-			log.Printf("poll: %v", e)
-		}
-		for _, r := range results {
-			if r.Changed {
-				log.Printf("poll: source %s changed, %d new version(s)", r.SourceID, r.NewVersions)
+// pollLoop honours each source's own interval_minutes (the old implementation
+// used one global ticker for everything). Every check drives notifications and
+// job creation from the sync results, exactly like the manual endpoints.
+func pollLoop(ctx context.Context, cfg config.Config, st *store.Store, src *source.Service, sign *signing.Manager, bark *notify.Sender) {
+	run := func(all bool) {
+		now := time.Now()
+		var ids []string
+		st.View(func(d *store.Data) {
+			for id, s := range d.Sources {
+				if !s.Enabled {
+					continue
+				}
+				if all {
+					ids = append(ids, id)
+					continue
+				}
+				interval := s.IntervalMinutes
+				if interval < 1 {
+					interval = cfg.PollIntervalMinutes
+				}
+				if interval < 1 {
+					interval = 30
+				}
+				if s.LastCheckedAt.IsZero() || now.Sub(s.LastCheckedAt) >= time.Duration(interval)*time.Minute {
+					ids = append(ids, id)
+				}
 			}
+		})
+		sort.Strings(ids)
+		for _, id := range ids {
+			c, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			res, err := src.Sync(c, id)
+			if err != nil {
+				log.Printf("poll: source %s: %v", id, err)
+				cancel()
+				continue
+			}
+			if res.Changed {
+				log.Printf("poll: source %s changed, %d new version(s)", id, res.NewVersions)
+			}
+			if n := bark.NotifyUpdates(c, res.Updates); n > 0 {
+				log.Printf("poll: source %s sent %d bark notification(s)", id, n)
+			}
+			cancel()
 		}
+		// Idempotent: also picks up configs added since the last check.
 		n, err := sign.EnqueuePending()
 		if err != nil {
 			log.Printf("poll: enqueue: %v", err)
@@ -135,15 +161,15 @@ func pollLoop(ctx context.Context, cfg config.Config, src *source.Service, sign 
 			log.Printf("poll: created %d signing job(s)", n)
 		}
 	}
-	run()
-	ticker := time.NewTicker(time.Duration(cfg.PollIntervalMinutes) * time.Minute)
+	run(true) // reconcile everything once at startup
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			run()
+			run(false)
 		}
 	}
 }

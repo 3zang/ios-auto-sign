@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -469,6 +470,34 @@ func (s *Server) refreshSource(w http.ResponseWriter, r *http.Request, u *store.
 
 // ---- apps and per-app configuration ----
 
+// Upstream sources publish IPAs as GitHub release assets, but do not carry a
+// repository field. Deriving the Releases page from the download URL lets the
+// UI link an app name to its upstream release history. Only well-formed
+// github.com release asset URLs are accepted, so a malicious source can never
+// turn an app name into a link to an arbitrary host or scheme.
+var githubSegmentRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func githubReleasesURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	if !strings.EqualFold(u.Host, "github.com") && !strings.EqualFold(u.Host, "www.github.com") {
+		return ""
+	}
+	// /{owner}/{repo}/releases/download/{tag}/{asset}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 6 || !strings.EqualFold(parts[2], "releases") || !strings.EqualFold(parts[3], "download") {
+		return ""
+	}
+	owner, repo := parts[0], parts[1]
+	if !githubSegmentRE.MatchString(owner) || !githubSegmentRE.MatchString(repo) ||
+		owner == "." || owner == ".." || repo == "." || repo == ".." {
+		return ""
+	}
+	return "https://github.com/" + owner + "/" + repo + "/releases"
+}
+
 func (s *Server) listApps(w http.ResponseWriter, _ *http.Request, u *store.User) {
 	type item struct {
 		App      map[string]any   `json:"app"`
@@ -497,27 +526,32 @@ func (s *Server) listApps(w http.ResponseWriter, _ *http.Request, u *store.User)
 			if src := d.Sources[a.SourceID]; src != nil {
 				sourceName = src.Name
 			}
-			versions := []map[string]any{}
-			for _, v := range d.Versions {
-				if v.AppID == a.ID {
-					versions = append(versions, map[string]any{
-						"id": v.ID, "version": v.Version, "build_version": v.BuildVersion,
-						"date": v.Date, "download_url": v.DownloadURL, "size": v.Size,
-						"min_os_version": v.MinOSVersion, "detected_at": v.DetectedAt,
-						"localized_description": v.LocalizedDescription,
-					})
+		versions := []map[string]any{}
+		releaseURL, releaseDate := "", ""
+		for _, v := range d.Versions {
+			if v.AppID == a.ID {
+				// Prefer the newest version in case an app moved repositories.
+				if link := githubReleasesURL(v.DownloadURL); link != "" && v.Date > releaseDate {
+					releaseURL, releaseDate = link, v.Date
 				}
+				versions = append(versions, map[string]any{
+					"id": v.ID, "version": v.Version, "build_version": v.BuildVersion,
+					"date": v.Date, "download_url": v.DownloadURL, "size": v.Size,
+					"min_os_version": v.MinOSVersion, "detected_at": v.DetectedAt,
+					"localized_description": v.LocalizedDescription,
+				})
 			}
+		}
 			var cfg any
 			if c := d.AppConfigs[store.ConfigKey(u.ID, a.ID)]; c != nil {
 				cfg = c
 			}
 			out = append(out, item{
 				App: map[string]any{
-					"id": a.ID, "source_id": a.SourceID, "source_name": sourceName,
-					"bundle_id": a.BundleID,
-					"name":      a.Name, "developer_name": a.DeveloperName,
-					"subtitle": a.Subtitle, "icon_url": a.IconURL, "updated_at": a.UpdatedAt,
+				"id": a.ID, "source_id": a.SourceID, "source_name": sourceName,
+				"bundle_id": a.BundleID, "release_url": releaseURL,
+				"name":      a.Name, "developer_name": a.DeveloperName,
+				"subtitle": a.Subtitle, "icon_url": a.IconURL, "updated_at": a.UpdatedAt,
 				},
 				Versions: versions, Config: cfg,
 			})
@@ -1103,6 +1137,9 @@ func (s *Server) runNow(w http.ResponseWriter, r *http.Request, u *store.User) {
 	for _, res := range results {
 		newVersions += res.NewVersions
 		updates = append(updates, res.Updates...)
+	}
+	if s.notifier != nil {
+		s.notifier.NotifyUpdates(ctx, updates)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sources":      len(results),

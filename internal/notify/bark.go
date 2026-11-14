@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"time"
 
+	"ios-auto-sign/internal/source"
 	"ios-auto-sign/internal/store"
 )
 
@@ -106,6 +108,58 @@ func (s *Sender) NotifyUpdate(ctx context.Context, up Update) error {
 		body += "（来源：" + strings.TrimSpace(up.SourceName) + "）"
 	}
 	return s.PushWithIcon(ctx, name+" 有更新", body, s.iconFor(up))
+}
+
+// NotifyUpdates pushes one message per newly discovered version, but only for
+// apps somebody has configured and enabled for signing. Unconfigured apps are
+// never signed on this installation, so announcing them is just noise. It
+// returns the number of notifications delivered and never fails a sync.
+func (s *Sender) NotifyUpdates(ctx context.Context, ups []source.AppUpdate) int {
+	delivered := 0
+	for _, up := range ups {
+		if !s.isConfigured(up.AppID, up.BundleID) {
+			continue
+		}
+		c, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err := s.NotifyUpdate(c, Update{
+			AppName: up.AppName, BundleID: up.BundleID, AppID: up.AppID,
+			Version: up.Version, SourceName: up.SourceName, IconURL: up.IconURL,
+		})
+		cancel()
+		if err != nil {
+			log.Printf("bark notification for %s: %v", up.AppName, err)
+			continue
+		}
+		delivered++
+	}
+	return delivered
+}
+
+// isConfigured reports whether any user has an enabled signing config for the
+// app. BundleID is a fallback for callers that only know the identifier.
+func (s *Sender) isConfigured(appID, bundleID string) bool {
+	found := false
+	s.st.View(func(d *store.Data) {
+		id := appID
+		if id == "" && bundleID != "" {
+			for _, a := range d.Apps {
+				if a != nil && a.BundleID == bundleID {
+					id = a.ID
+					break
+				}
+			}
+		}
+		if id == "" {
+			return
+		}
+		for _, c := range d.AppConfigs {
+			if c != nil && c.Enabled && c.AppID == id {
+				found = true
+				return
+			}
+		}
+	})
+	return found
 }
 
 // iconFor resolves the icon representing this app: a user-configured icon

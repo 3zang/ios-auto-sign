@@ -310,6 +310,33 @@
   }
 
   // ---------- apps ----------
+  // Update details differ in length, which would otherwise put each card's
+  // "配置签名元数据" toggle on a different baseline. Match every card head to
+  // the tallest one; expanding a card must not move the other toggles.
+  function alignAppCards() {
+    var panel = $('#panel-apps');
+    if (!panel || panel.hidden) return;
+    var heads = $$('#panel-apps .card').map(function (c) {
+      return c.querySelector('.card-head');
+    }).filter(Boolean);
+    if (!heads.length) return;
+    // Clear first, otherwise a previous pass would keep inflating the maximum.
+    heads.forEach(function (h) { h.style.minHeight = ''; });
+    var max = 0;
+    heads.forEach(function (h) {
+      var height = h.getBoundingClientRect().height;
+      if (height > max) max = height;
+    });
+    if (max <= 0) return;
+    var px = Math.ceil(max) + 'px';
+    heads.forEach(function (h) { h.style.minHeight = px; });
+  }
+  var alignTimer = null;
+  window.addEventListener('resize', function () {
+    if (alignTimer) clearTimeout(alignTimer);
+    alignTimer = setTimeout(function () { alignTimer = null; alignAppCards(); }, 120);
+  });
+
   loaders.apps = async function () {
     var r = await Promise.all([api('/api/apps'), api('/api/icons'), api('/api/certificates')]);
     renderApps(r[0], r[1], r[2]);
@@ -356,12 +383,16 @@
       var src = c.icon_source || 'original';
       var sourceBadge = '<span class="source-badge" data-i18n-skip>' +
         esc(tr('来自')) + ' ' + esc(a.source_name || tr('未知源')) + '</span>';
+      var nameHTML = a.release_url
+        ? '<a class="name app-name-link" data-i18n-skip href="' + esc(a.release_url) +
+          '" target="_blank" rel="noopener noreferrer" title="' + esc(tr('GitHub 发布页')) + '">' + esc(a.name) + '</a>'
+        : '<div class="name" data-i18n-skip>' + esc(a.name) + '</div>';
       return '<div class="card">' +
         '<div class="card-head">' + icon + '<div>' +
-          '<div class="app-title-row"><div class="name" data-i18n-skip>' + esc(a.name) + '</div>' + sourceBadge + '</div>' +
+          '<div class="app-title-row">' + nameHTML + sourceBadge + '</div>' +
           '<div class="sub mono">' + esc(a.bundle_id) + '</div>' +
           '<div class="sub">' + (latest ? '版本 ' + esc(latest.version) : '暂无版本') + '</div>' +
-          (latest ? '<div class="sub">' + tr('更新时间') + '：' + esc(fmtDateTime(latest.detected_at || latest.date)) + '</div>' : '') +
+          (latest ? '<div class="sub">' + tr('更新时间') + '：' + esc(fmtDateTime(latest.date || latest.detected_at)) + '</div>' : '') +
           updateDetailHTML(latest) + '</div>' +
           (row.config ? '<button type="button" class="danger card-delete" data-action="delete-app-config" data-id="' + esc(a.id) + '">' + tr('删除配置') + '</button>' : '') +
         '</div>' +
@@ -477,6 +508,7 @@
         loaders.apps();
       };
     });
+    alignAppCards();
   }
 
   // ---------- icon library ----------

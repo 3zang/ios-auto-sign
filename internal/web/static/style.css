@@ -295,6 +295,7 @@ tr:last-child td { border-bottom: none; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
 .card {
   position: relative; padding: 22px; overflow: hidden;
+  display: flex; flex-direction: column;
   border: 1px solid var(--border); border-radius: 27px; background: var(--surface);
   box-shadow: var(--shadow-card);
   -webkit-backdrop-filter: blur(18px) saturate(140%); backdrop-filter: blur(18px) saturate(140%);
@@ -305,7 +306,18 @@ tr:last-child td { border-bottom: none; }
 .card-head { position: relative; z-index: 1; display: flex; gap: 14px; align-items: center; }
 .card-head img { width: 56px; height: 56px; border-radius: 16px; object-fit: cover; background: var(--surface-muted); box-shadow: 0 8px 20px rgba(0, 0, 0, .1); }
 .card-head .name { font-weight: 650; font-size: 17px; letter-spacing: -.02em; }
+/* App name links to the upstream GitHub Releases page when one can be derived. */
+.app-name-link { color: inherit; text-decoration: none; cursor: pointer; transition: color .18s ease; }
+.app-name-link:hover, .app-name-link:focus-visible { color: var(--blue); }
+.app-name-link::after {
+  content: "\2197"; display: inline-block; margin-left: 5px;
+  color: var(--text-tertiary); font-size: 11px; font-weight: 600; vertical-align: 1px;
+}
+.app-name-link:hover::after { color: var(--blue); }
 .app-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+/* Heads are stretched to a common height by alignAppCards(); start their
+   content at the top so the extra space stays below, before the details toggle. */
+#panel-apps .card-head { align-items: flex-start; }
 .source-badge {
   display: inline-block; max-width: 100%; padding: 1px 8px;
   border: 1px solid var(--border-strong); border-radius: 999px;
@@ -325,7 +337,7 @@ tr:last-child td { border-bottom: none; }
 .app-config label.icon-lib select { order: 3; flex: 1 1 100%; min-width: 0; }
 .icon-lib-preview { width: 34px; height: 34px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-solid); object-fit: cover; }
 .icon-lib-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; color: var(--text-secondary); font-size: 12px; }
-.card-body { position: relative; z-index: 1; margin-top: 14px; display: grid; gap: 10px; }
+.card-body { position: relative; z-index: 1; margin-top: auto; padding-top: 14px; display: grid; gap: 10px; }
 .install-meta { position: relative; z-index: 1; display: grid; gap: 6px; margin: 18px 0; color: var(--text-secondary); font-size: 13px; }
 .install-meta b { color: var(--text); font-weight: 600; }
 .install-actions { position: relative; z-index: 1; }
