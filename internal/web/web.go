@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,12 +72,18 @@ type Server struct {
 	key      *[32]byte
 	client   *http.Client
 	notifier *notify.Sender
+	logBuf   *LogBuffer
 }
 
 func New(cfg config.Config, st *store.Store, a *auth.Manager, src *source.Service,
 	sign *signing.Manager, gen plist.Generator, key *[32]byte, client *http.Client) *Server {
+	// Capture process log output into a ring buffer (still mirrored to stderr)
+	// so the console's "日志" tab can show recent server activity regardless of
+	// how stderr is redirected in the deployment.
+	lb := NewLogBuffer(2000, os.Stderr)
+	log.SetOutput(lb)
 	return &Server{cfg: cfg, st: st, auth: a, sources: src, signing: sign,
-		gen: gen, key: key, client: client, notifier: notify.New(st, client)}
+		gen: gen, key: key, client: client, notifier: notify.New(st, client), logBuf: lb}
 }
 
 // requestBaseURL derives the externally visible base from the current
@@ -187,6 +194,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.auth.Require(s.saveSettings))
 	mux.HandleFunc("POST /api/settings/bark/test", s.auth.Require(s.testBark))
 	mux.HandleFunc("POST /api/sync/run", s.auth.Require(s.runNow))
+	mux.HandleFunc("GET /api/logs", s.auth.Require(s.listLogs))
 
 	// Installation data is account-scoped. The legacy public path is kept as
 	// an alias but now uses the same authenticated, filtered handler.
@@ -1147,5 +1155,36 @@ func (s *Server) runNow(w http.ResponseWriter, r *http.Request, u *store.User) {
 		"updates":      updates,
 		"jobs_created": created,
 		"errors":       errs,
+	})
+}
+
+// listLogs returns recent log entries captured by the process-wide ring buffer.
+// `limit` caps the number of entries (default/max applied server-side) and
+// `since` returns only entries newer than the given sequence number, which the
+// UI uses for incremental polling.
+func (s *Server) listLogs(w http.ResponseWriter, r *http.Request, _ *store.User) {
+	q := r.URL.Query()
+	limit := 0
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+			if limit > 1000 {
+				limit = 1000
+			}
+		}
+	}
+	var since int64
+	if v := q.Get("since"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			since = n
+		}
+	}
+	entries := s.logBuf.Recent(limit, since)
+	if entries == nil {
+		entries = []LogEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries": entries,
+		"seq":     s.logBuf.Seq(),
 	})
 }

@@ -195,6 +195,7 @@
   async function switchTab(name) {
     $$('.tab').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === name); });
     $$('.panel').forEach(function (p) { p.hidden = p.id !== 'panel-' + name; });
+    stopLogPolling();
     try { await loaders[name](); } catch (e) { fail(e); }
   }
 
@@ -251,16 +252,23 @@
   };
 
   // ---------- sources ----------
+  var sourcesCache = [];
   loaders.sources = async function () {
     renderSources(await api('/api/sources'));
   };
 
   function renderSources(list) {
+    sourcesCache = list;
     var rows = list.map(function (s) {
       return '<tr><td data-i18n-skip><b>' + esc(s.name) + '</b></td>' +
         '<td class="mono source-url" title="' + esc(s.url) + '">' + esc(s.url) + '</td>' +
         '<td class="status-cell">' + (s.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag">停用</span>') + '</td>' +
-        '<td>' + s.interval_minutes + ' 分钟</td>' +
+        '<td><div class="stepper" data-id="' + esc(s.id) + '" data-value="' + (s.interval_minutes || 1) + '">' +
+          '<button type="button" class="step-btn" data-step="-1" title="减少" aria-label="减少间隔">−</button>' +
+          '<span class="step-val">' + (s.interval_minutes || 1) + '</span>' +
+          '<button type="button" class="step-btn" data-step="1" title="增加" aria-label="增加间隔">+</button>' +
+          '<span class="step-unit">' + tr('分钟') + '</span>' +
+        '</div></td>' +
         '<td>' + esc(fmtTime(s.last_checked_at)) + '</td>' +
         '<td>' + (s.last_error ? '<span class="tag err">' + esc(s.last_error) + '</span>' : '-') + '</td>' +
         '<td class="source-actions"><div class="row-actions">' +
@@ -298,6 +306,34 @@
         await loaders.sources();
       } catch (err) { fail(err); }
     };
+
+    $$('#panel-sources .step-btn').forEach(function (btn) {
+      btn.onclick = async function () {
+        var wrap = btn.closest('.stepper');
+        var id = wrap.getAttribute('data-id');
+        var src = sourcesCache.filter(function (s) { return s.id === id; })[0];
+        if (!src) return;
+        var cur = parseInt(wrap.getAttribute('data-value'), 10);
+        if (isNaN(cur)) cur = src.interval_minutes || 1;
+        var next = cur + parseInt(btn.getAttribute('data-step'), 10);
+        if (next < 1) next = 1;
+        if (next > 1440) next = 1440;
+        wrap.setAttribute('data-value', String(next));
+        wrap.querySelector('.step-val').textContent = next;
+        try {
+          await api('/api/sources/' + encodeURIComponent(id), json('PUT', {
+            name: src.name, url: src.url, enabled: src.enabled, interval_minutes: next
+          }));
+          src.interval_minutes = next;
+          toast(tr('刷新间隔已更新') + '：' + next + ' ' + tr('分钟'));
+        } catch (err) {
+          wrap.setAttribute('data-value', String(cur));
+          wrap.querySelector('.step-val').textContent = cur;
+          if (src) src.interval_minutes = cur;
+          fail(err);
+        }
+      };
+    });
   }
 
   // ---------- apps ----------
@@ -719,6 +755,87 @@
       btn.disabled = false;
     };
   }
+
+  // ---------- logs ----------
+  var logState = { timer: null, lastSeq: 0, filter: 'all', auto: true };
+
+  function stopLogPolling() {
+    if (logState.timer) { clearInterval(logState.timer); logState.timer = null; }
+  }
+
+  function startLogPolling() {
+    stopLogPolling();
+    if (!logState.auto) return;
+    logState.timer = setInterval(function () {
+      api('/api/logs?since=' + logState.lastSeq + '&limit=500').then(function (data) {
+        logState.lastSeq = data.seq;
+        if (data.entries && data.entries.length) { renderLogEntries(data.entries, true); }
+      }).catch(function () { /* transient polling errors are ignored */ });
+    }, 3000);
+  }
+
+  function logLineHTML(e) {
+    return '<div class="log-line log-' + e.level + '">' +
+      '<span class="log-seq">#' + e.seq + '</span>' +
+      '<span class="log-time">' + esc(e.time) + '</span>' +
+      '<span class="log-msg">' + esc(e.message) + '</span></div>';
+  }
+
+  function renderLogEntries(entries, append) {
+    var box = $('#logBox');
+    if (!box) return;
+    var atBottom = append ? (box.scrollHeight - box.scrollTop - box.clientHeight < 48) : true;
+    var frag = entries.filter(function (e) {
+      return logState.filter === 'all' || e.level === logState.filter;
+    }).map(logLineHTML).join('');
+    if (append) {
+      box.insertAdjacentHTML('beforeend', frag);
+    } else {
+      box.innerHTML = frag;
+    }
+    if (logState.auto && atBottom) box.scrollTop = box.scrollHeight;
+  }
+
+  loaders.logs = async function () {
+    var panel = $('#panel-logs');
+    if (!panel.dataset.built) {
+      panel.dataset.built = '1';
+      panel.innerHTML =
+        '<p class="section-kicker">SERVER LOG</p>' +
+        '<h2>运行日志</h2>' +
+        '<div class="log-toolbar">' +
+          '<div class="log-filters" role="group" aria-label="级别筛选">' +
+            '<button type="button" class="chip active" data-log-filter="all">' + tr('全部') + '</button>' +
+            '<button type="button" class="chip" data-log-filter="info">' + tr('信息') + '</button>' +
+            '<button type="button" class="chip" data-log-filter="warn">' + tr('警告') + '</button>' +
+            '<button type="button" class="chip" data-log-filter="error">' + tr('错误') + '</button>' +
+          '</div>' +
+          '<label class="log-auto"><input type="checkbox" id="logAuto" checked> ' + tr('自动刷新') + '</label>' +
+          '<button type="button" class="button button-secondary" id="logRefresh">' + tr('刷新') + '</button>' +
+          '<button type="button" class="button button-quiet" id="logClear">' + tr('清空视图') + '</button>' +
+        '</div>' +
+        '<div class="log-box" id="logBox"></div>';
+      $$('#panel-logs .chip[data-log-filter]').forEach(function (b) {
+        b.onclick = function () {
+          $$('#panel-logs .chip[data-log-filter]').forEach(function (x) { x.classList.remove('active'); });
+          b.classList.add('active');
+          logState.filter = b.dataset.logFilter;
+          loaders.logs();
+        };
+      });
+      var auto = $('#logAuto');
+      auto.onchange = function () {
+        logState.auto = auto.checked;
+        if (logState.auto) { startLogPolling(); } else { stopLogPolling(); }
+      };
+      $('#logRefresh').onclick = function () { loaders.logs(); };
+      $('#logClear').onclick = function () { var box = $('#logBox'); if (box) box.innerHTML = ''; };
+    }
+    var data = await api('/api/logs?limit=500');
+    logState.lastSeq = data.seq;
+    renderLogEntries(data.entries, false);
+    startLogPolling();
+  };
 
   // ---------- install (account scoped, shown as a tab) ----------
   loaders.install = async function () {

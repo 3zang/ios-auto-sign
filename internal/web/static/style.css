@@ -200,6 +200,43 @@ button:disabled { opacity: .5; cursor: default; transform: none; }
 .theme-toggle[data-mode="auto"] .ico-auto { display: inline; }
 .theme-toggle-label { display: inline-block; }
 
+/* ---------- server log viewer ---------- */
+.log-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 14px 0 16px; }
+.log-filters { display: flex; gap: 6px; }
+.chip {
+  flex: 0 0 auto; white-space: nowrap; background: var(--surface-muted);
+  border: 1px solid transparent; border-radius: 999px; padding: 7px 14px;
+  cursor: pointer; color: var(--text-secondary); font-size: 13px; font-weight: 600;
+}
+.chip:hover { color: var(--text); }
+.chip.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+.log-auto { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); font-weight: 600; }
+.log-box {
+  max-height: 62vh; overflow: auto; padding: 12px 14px;
+  background: var(--surface-solid); border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65;
+}
+.log-line { display: flex; gap: 12px; padding: 2px 0; border-bottom: 1px solid var(--border); white-space: pre-wrap; word-break: break-word; }
+.log-line:last-child { border-bottom: 0; }
+.log-seq { flex: 0 0 auto; color: var(--text-tertiary); opacity: .65; user-select: none; }
+.log-time { flex: 0 0 auto; color: var(--text-tertiary); }
+.log-msg { flex: 1; min-width: 0; color: var(--text); }
+.log-warn .log-msg { color: #b7791f; }
+.log-error .log-msg { color: var(--red); }
+
+/* source refresh-interval stepper */
+.stepper { display: inline-flex; align-items: center; gap: 4px; }
+.step-btn {
+  width: 26px; height: 26px; padding: 0; flex: 0 0 auto;
+  display: inline-grid; place-items: center;
+  border: 1px solid var(--border-strong); border-radius: 8px;
+  background: var(--surface-solid); color: var(--text); font-size: 16px; line-height: 1; font-weight: 600;
+}
+.step-btn:hover { border-color: var(--blue); color: var(--blue); }
+.step-btn:active { transform: scale(.94); }
+.step-val { min-width: 26px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+.step-unit { color: var(--text-tertiary); font-size: 12px; }
+
 /* Language switch: compact pill next to the theme toggle */
 .lang-switch {
   flex: 0 0 auto; min-width: 44px; height: 28px; padding: 0 11px;

@@ -43,7 +43,20 @@
     '证书': 'Certificates',
     '任务与产物': 'Jobs & Artifacts',
     '安装': 'Install',
+    '日志': 'Logs',
     '设置中心': 'Settings',
+
+    // ---- log viewer ----
+    '运行日志': 'Server log',
+    '信息': 'Info',
+    '警告': 'Warning',
+    '自动刷新': 'Auto refresh',
+    '清空视图': 'Clear view',
+
+    // ---- source refresh interval ----
+    '间隔': 'Interval',
+    '分钟': 'min',
+    '刷新间隔已更新': 'Refresh interval updated',
 
     // ---- dialogs ----
     '关闭二维码': 'Close QR code',
