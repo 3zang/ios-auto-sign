@@ -106,14 +106,13 @@ a.link:hover { text-decoration: underline; }
 .auth-foot { font-size: 11px; color: var(--text-tertiary); margin: 24px 0 0; }
 
 /* ---------- shell ---------- */
-/* The title bar + tab bar float as one opaque header. Its solid background
-   masks scrolling content at the tab bar's bottom edge, so panels disappear
-   behind the tabs instead of showing through the glass until the viewport top. */
+/* The header stays fixed while only <main> scrolls. Because content scrolls
+   inside main, it is clipped at the header's bottom edge naturally - no opaque
+   background, border or shadow on the header is needed to hide scroll-through. */
+#app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .app-header {
-  position: sticky; top: 0; z-index: 40;
+  position: relative; z-index: 40; flex: 0 0 auto;
   padding-top: 16px;
-  background: var(--bg);
-  box-shadow: 0 10px 24px -18px rgba(0, 0, 0, .28);
 }
 .topbar {
   position: relative; display: flex; align-items: center; gap: 12px;
@@ -140,7 +139,7 @@ a.link:hover { text-decoration: underline; }
 .tab:hover { border-color: transparent; color: var(--text); background: var(--surface-muted); }
 .tab.active { background: var(--blue); color: #fff; font-weight: 600; box-shadow: var(--shadow-button); }
 .tab.active:hover { background: var(--blue-hover); color: #fff; }
-main { position: relative; z-index: 1; padding: 0 24px 56px; }
+main { position: relative; z-index: 1; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px 24px 56px; }
 .panel {
   padding: 26px; min-height: 260px;
   border: 1px solid var(--border); border-radius: var(--radius-xl);
@@ -516,6 +515,8 @@ details[open] > summary { margin-bottom: 6px; }
   .notice { margin-top: 16px; margin-bottom: 0; }
   main { padding-left: 24px; padding-right: 24px; }
 }
+/* Breathing room between the tab row and the data panels below it. */
+.tabs { padding-bottom: 20px; }
 
 /* ---------- mobile ---------- */
 @media (max-width: 700px) {
@@ -532,9 +533,9 @@ details[open] > summary { margin-bottom: 6px; }
   .brand-version { margin-left: 5px; padding: 1px 5px; font-size: 9px; }
   #who { display: none; }
   .notice { margin: 12px 16px 0; }
-  .tabs { padding: 10px 16px 10px; gap: 6px; }
+  .tabs { padding: 10px 16px 16px; gap: 6px; }
   .tab { padding: 7px 12px; font-size: 13px; }
-  main { padding: 0 16px 36px; }
+  main { padding: 8px 16px 36px; }
   .panel { padding: 14px; border-radius: var(--radius-lg); overflow-x: auto; }
   table { min-width: 560px; }
   .card-grid { grid-template-columns: 1fr; gap: 12px; }
