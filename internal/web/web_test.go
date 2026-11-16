@@ -81,6 +81,51 @@ func TestInstallAppsAreAccountScopedAndUseRequestHost(t *testing.T) {
 	check(&store.User{ID: "admin", Role: "admin"}, 2, "")
 }
 
+func TestInstallAppsChangelogIsNewestFirstAndFlagsCurrent(t *testing.T) {
+	s, st := newTestServer(t)
+	if err := st.Update(func(d *store.Data) error {
+		d.Users["u1"] = &store.User{ID: "u1", Username: "u1", Role: "user"}
+		d.Artifacts["a1"] = &store.Artifact{
+			ID: "a1", UserID: "u1", AppID: "app1", VersionID: "v1",
+			DisplayName: "App", BundleID: "com.app", Version: "1.0",
+		}
+		d.Versions["v1"] = &store.AppVersion{ID: "v1", AppID: "app1", Version: "1.0",
+			Date: "2026-01-01", DetectedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+		d.Versions["v2"] = &store.AppVersion{ID: "v2", AppID: "app1", Version: "2.0",
+			Date: "2026-02-01", LocalizedDescription: "new stuff", DetectedAt: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)}
+		d.Versions["other"] = &store.AppVersion{ID: "other", AppID: "app2", Version: "9.0",
+			DetectedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/api/install/apps", nil)
+	s.installApps(rr, req, &store.User{ID: "u1", Role: "user"})
+	var out []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("got %d apps, want 1", len(out))
+	}
+	changes, ok := out[0]["changelog"].([]any)
+	if !ok || len(changes) != 2 {
+		t.Fatalf("changelog = %v, want 2 entries", out[0]["changelog"])
+	}
+	first := changes[0].(map[string]any)
+	second := changes[1].(map[string]any)
+	if first["version"] != "2.0" || second["version"] != "1.0" {
+		t.Fatalf("changelog not newest first: %v then %v", first["version"], second["version"])
+	}
+	if first["current"] != false || second["current"] != true {
+		t.Fatalf("current flag wrong: v2.current=%v v1.current=%v", first["current"], second["current"])
+	}
+	if first["description"] != "new stuff" {
+		t.Fatalf("description missing: %v", first["description"])
+	}
+}
+
 // In remote /genPlist mode the install link must carry the whole manifest URL
 // as one encoded value, while manifest_url stays the readable target.
 func TestInstallURLIsFullyEncodedInPlistServerMode(t *testing.T) {
@@ -234,40 +279,51 @@ func TestSetSourceIntervalIsPerUser(t *testing.T) {
 	s, st := newTestServer(t)
 	if err := st.Update(func(d *store.Data) error {
 		d.Users["u1"] = &store.User{ID: "u1", Username: "u1", Role: "user"}
-		d.Sources["src1"] = &store.Source{ID: "src1", OwnerID: "u1", Name: "S", URL: "https://x", Enabled: true, IntervalMinutes: 30}
+		d.Users["u2"] = &store.User{ID: "u2", Username: "u2", Role: "user"}
+		// Owned by an admin; neither u1 nor u2 owns it. Personal intervals must
+		// still be settable by both non-owner accounts.
+		d.Sources["src1"] = &store.Source{ID: "src1", OwnerID: "admin", Name: "S", URL: "https://x", Enabled: true, IntervalMinutes: 30}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Set a per-user interval.
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/sources/src1/interval",
-		strings.NewReader(`{"interval_minutes":7}`))
-	req.SetPathValue("id", "src1")
-	s.setSourceInterval(rr, req, &store.User{ID: "u1", Role: "user"})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("set interval status = %d: %s", rr.Code, rr.Body.String())
+	setInterval := func(uid, body string) int {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/sources/src1/interval", strings.NewReader(body))
+		req.SetPathValue("id", "src1")
+		s.setSourceInterval(rr, req, &store.User{ID: uid, Role: "user"})
+		return rr.Code
 	}
-	var u1 store.User
-	st.View(func(d *store.Data) { u1 = *d.Users["u1"] })
-	if u1.SourceIntervals["src1"] != 7 {
-		t.Fatalf("per-user interval not stored: %+v", u1.SourceIntervals)
+	// A non-admin, non-owner can set their own interval (regression: used to 404).
+	if code := setInterval("u1", `{"interval_minutes":7}`); code != http.StatusOK {
+		t.Fatalf("u1 set interval status = %d (non-owner must be allowed)", code)
+	}
+	if code := setInterval("u2", `{"interval_minutes":15}`); code != http.StatusOK {
+		t.Fatalf("u2 set interval status = %d", code)
+	}
+	var u1, u2 store.User
+	st.View(func(d *store.Data) { u1 = *d.Users["u1"]; u2 = *d.Users["u2"] })
+	if u1.SourceIntervals["src1"] != 7 || u2.SourceIntervals["src1"] != 15 {
+		t.Fatalf("per-user intervals not stored independently: u1=%+v u2=%+v", u1.SourceIntervals, u2.SourceIntervals)
 	}
 	if d := getSourceInterval(st, "src1"); d != 30 {
 		t.Fatalf("source default interval changed: %d, want 30", d)
 	}
-	// Reset to default (0).
-	rr = httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPut, "/api/sources/src1/interval",
-		strings.NewReader(`{"interval_minutes":0}`))
-	req2.SetPathValue("id", "src1")
-	s.setSourceInterval(rr, req2, &store.User{ID: "u1", Role: "user"})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("reset interval status = %d", rr.Code)
+	// Reset to default (0) also works for a non-owner.
+	if code := setInterval("u1", `{"interval_minutes":0}`); code != http.StatusOK {
+		t.Fatalf("reset interval status = %d", code)
 	}
 	st.View(func(d *store.Data) { u1 = *d.Users["u1"] })
 	if _, ok := u1.SourceIntervals["src1"]; ok {
 		t.Fatalf("interval override not cleared: %+v", u1.SourceIntervals)
+	}
+	// Unknown source still returns 404.
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/sources/missing/interval", strings.NewReader(`{"interval_minutes":5}`))
+	req.SetPathValue("id", "missing")
+	s.setSourceInterval(rr, req, &store.User{ID: "u1", Role: "user"})
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("missing source status = %d, want 404", rr.Code)
 	}
 }
 

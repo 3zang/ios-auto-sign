@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ios-auto-sign/internal/source"
 	"ios-auto-sign/internal/store"
@@ -58,6 +59,42 @@ func TestNotifyUpdatesUsesPerUserConfig(t *testing.T) {
 	}
 	if got.URL != "https://example.com/open" {
 		t.Errorf("url = %q, want the per-user redirect url", got.URL)
+	}
+}
+
+// TestUserUpdatesSinceCursorBoundary locks in the contract that makes per-user
+// polling deliver each version exactly once. A version detected at T must be
+// returned when the cursor is before T, and must NOT be returned once the
+// cursor has advanced to T (or past it). The poll loop advances the cursor to
+// a timestamp taken after Sync assigns DetectedAt; if it used an earlier time,
+// the same version would be pushed again on the next tick (double notification).
+func TestUserUpdatesSinceCursorBoundary(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	detected := time.Date(2026, 11, 16, 7, 51, 2, 0, time.UTC)
+	if err := st.Update(func(d *store.Data) error {
+		d.Sources["s1"] = &store.Source{ID: "s1", Name: "S"}
+		d.Apps["app1"] = &store.App{ID: "app1", SourceID: "s1", BundleID: "com.demo", Name: "Demo"}
+		d.Versions["v1"] = &store.AppVersion{ID: "v1", AppID: "app1", Version: "2.0", DetectedAt: detected}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := New(st, nil)
+	// Cursor before detection: version is new and must be delivered.
+	if got := s.UserUpdatesSince("s1", detected.Add(-time.Second)); len(got) != 1 {
+		t.Fatalf("cursor before detection: got %d updates, want 1", len(got))
+	}
+	// Cursor equal to detection time (as set by a post-Sync advance): already
+	// notified, must not be delivered again.
+	if got := s.UserUpdatesSince("s1", detected); len(got) != 0 {
+		t.Fatalf("cursor at detection time: got %d updates, want 0 (double push)", len(got))
+	}
+	// Cursor after detection: still nothing.
+	if got := s.UserUpdatesSince("s1", detected.Add(time.Second)); len(got) != 0 {
+		t.Fatalf("cursor after detection: got %d updates, want 0", len(got))
 	}
 }
 

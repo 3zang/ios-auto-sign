@@ -351,8 +351,13 @@ type sourceIntervalPayload struct {
 // applies again.
 func (s *Server) setSourceInterval(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id := r.PathValue("id")
-	if _, ok := s.canEditSource(id, u); !ok {
-		writeError(w, http.StatusNotFound, errors.New("source not found or not permitted"))
+	// The personal interval only touches this account's own SourceIntervals and
+	// never changes the source itself. Every signed-in user can already see all
+	// sources, so any of them may tune their own cadence for an existing source
+	// regardless of who owns it. Do NOT use canEditSource here: that guard is
+	// for editing/deleting the shared source (admin or owner only).
+	if _, ok := s.st.Source(id); !ok {
+		writeError(w, http.StatusNotFound, errors.New("source not found"))
 		return
 	}
 	var p sourceIntervalPayload
@@ -924,17 +929,25 @@ func (s *Server) deleteArtifact(w http.ResponseWriter, r *http.Request, u *store
 // derived from the current request, so the address is never stale.
 func (s *Server) installApps(w http.ResponseWriter, r *http.Request, u *store.User) {
 	base := requestBaseURL(r)
-	type view struct {
-		ID          string    `json:"id"`
-		Name        string    `json:"name"`
-		BundleID    string    `json:"bundle_id"`
+	type changeEntry struct {
 		Version     string    `json:"version"`
-		IconURL     string    `json:"icon_url"`
-		UpdatedAt   time.Time `json:"updated_at"`
-		Size        int64     `json:"size"`
-		ManifestURL string    `json:"manifest_url"`
-		InstallURL  string    `json:"install_url"`
-		IPAURL      string    `json:"ipa_url"`
+		Date        string    `json:"date"`
+		Description string    `json:"description"`
+		DetectedAt  time.Time `json:"detected_at"`
+		Current     bool      `json:"current"`
+	}
+	type view struct {
+		ID          string        `json:"id"`
+		Name        string        `json:"name"`
+		BundleID    string        `json:"bundle_id"`
+		Version     string        `json:"version"`
+		IconURL     string        `json:"icon_url"`
+		UpdatedAt   time.Time     `json:"updated_at"`
+		Size        int64         `json:"size"`
+		ManifestURL string        `json:"manifest_url"`
+		InstallURL  string        `json:"install_url"`
+		IPAURL      string        `json:"ipa_url"`
+		Changelog   []changeEntry `json:"changelog"`
 	}
 	out := []view{}
 	s.st.View(func(d *store.Data) {
@@ -969,12 +982,49 @@ func (s *Server) installApps(w http.ResponseWriter, r *http.Request, u *store.Us
 					manifest, installURL = remote, plist.ItmsServicesURL(remote, true)
 				}
 			}
+			// Build the app's update history from every version seen for this
+			// app, newest first. The version the installed artifact points at
+			// is flagged as current. This is app-level metadata shared by all
+			// accounts, so it does not leak anything account-specific.
+			changes := []changeEntry{}
+			hasCurrent := false
+			for _, v := range d.Versions {
+				if v == nil || v.AppID != a.AppID {
+					continue
+				}
+				current := v.ID == a.VersionID
+				if current {
+					hasCurrent = true
+				}
+				changes = append(changes, changeEntry{
+					Version: v.Version, Date: v.Date,
+					Description: v.LocalizedDescription, DetectedAt: v.DetectedAt,
+					Current: current,
+				})
+			}
+			// Older artifacts may predate VersionID; fall back to matching by
+			// version number so the installed build is still highlighted.
+			if !hasCurrent {
+				for i := range changes {
+					if changes[i].Version == a.Version {
+						changes[i].Current = true
+						break
+					}
+				}
+			}
+			sort.Slice(changes, func(i, j int) bool {
+				if changes[i].DetectedAt.Equal(changes[j].DetectedAt) {
+					return changes[i].Version > changes[j].Version
+				}
+				return changes[i].DetectedAt.After(changes[j].DetectedAt)
+			})
 			out = append(out, view{
 				ID: a.ID, Name: name, BundleID: a.BundleID, Version: a.Version,
 				IconURL: icon, UpdatedAt: a.CreatedAt, Size: a.Size,
 				ManifestURL: manifest,
 				InstallURL:  installURL,
 				IPAURL:      ipaURL,
+				Changelog:   changes,
 			})
 		}
 	})

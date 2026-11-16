@@ -26,7 +26,32 @@
   .page-head .muted { display: block; margin-top: 8px; }
   .app-icon { width: 72px; height: 72px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 18px; background: var(--surface-muted); box-shadow: 0 12px 26px rgba(0, 0, 0, .1); object-fit: cover; }
   .app-title { font-size: 20px; font-weight: 650; letter-spacing: -.025em; }
+  .app-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .detail-btn {
+    padding: 2px 10px; height: 24px; flex: 0 0 auto;
+    border: 1px solid var(--border-strong); border-radius: 999px;
+    background: var(--surface-solid); color: var(--text-secondary);
+    font-size: 12px; line-height: 1; cursor: pointer;
+  }
+  .detail-btn:hover { border-color: var(--blue); color: var(--blue); }
   .app-line { color: var(--text-secondary); font-size: 13px; }
+  .changelog { max-height: 55vh; overflow-y: auto; margin: 18px 0 4px; }
+  .change-item {
+    position: relative; padding: 0 0 20px 20px; margin-left: 6px;
+    border-left: 2px solid var(--border-strong);
+  }
+  .change-item:last-child { border-left-color: transparent; padding-bottom: 0; }
+  .change-item::before {
+    content: ''; position: absolute; left: -6px; top: 3px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--surface-solid); border: 2px solid var(--text-tertiary);
+  }
+  .change-item.current::before { border-color: var(--blue); background: var(--blue); }
+  .change-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .change-version { font-weight: 650; font-size: 15px; }
+  .change-date { color: var(--text-tertiary); font-size: 12px; }
+  .change-desc { color: var(--text-secondary); font-size: 13px; line-height: 1.6; margin-top: 6px; white-space: pre-wrap; }
+  .changelog-empty { color: var(--text-tertiary); font-size: 13px; padding: 12px 0; }
   .install-meta { margin: 18px 0; }
   .foot { margin-top: 28px; color: var(--text-tertiary); font-size: 12px; line-height: 1.6; }
   @media (min-width: 1024px) {
@@ -74,6 +99,17 @@
   <div id="login-required" class="empty-state" hidden>安装数据已按账号隔离，请先<a class="link" href="/">登录控制台</a>后再打开本页。</div>
   <p class="foot">安装链接使用 itms-services 协议，请在 iOS 设备的 Safari 中打开；桌面浏览器点击不会触发安装。</p>
 </div>
+
+<dialog class="qr-dialog" id="detailDialog" aria-labelledby="detailDialogTitle">
+  <div class="dialog-glow" aria-hidden="true"></div>
+  <button class="dialog-close" id="closeDetailButton" type="button" aria-label="关闭详情">×</button>
+  <div class="dialog-content">
+    <p class="section-kicker">CHANGELOG</p>
+    <h2 id="detailDialogTitle"></h2>
+    <p class="section-kicker" id="detailDialogBundle" data-i18n-skip></p>
+    <div class="changelog" id="detailChangelog"></div>
+  </div>
+</dialog>
 
 <dialog class="qr-dialog" id="qrDialog" aria-labelledby="qrDialogTitle">
   <div class="dialog-glow" aria-hidden="true"></div>
@@ -137,6 +173,35 @@
   $('#closeQrButton').onclick = closeQr;
   $('#qrDialog').addEventListener('click', function (e) { if (e.target === $('#qrDialog')) closeQr(); });
 
+  function closeDetail() {
+    var dlg = $('#detailDialog');
+    if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+    else dlg.removeAttribute('open');
+  }
+  $('#closeDetailButton').onclick = closeDetail;
+  $('#detailDialog').addEventListener('click', function (e) { if (e.target === $('#detailDialog')) closeDetail(); });
+
+  function openDetail(app) {
+    $('#detailDialogTitle').textContent = app.name || '';
+    $('#detailDialogBundle').textContent = app.bundle_id || '';
+    var list = Array.isArray(app.changelog) ? app.changelog : [];
+    if (!list.length) {
+      $('#detailChangelog').innerHTML = '<div class="changelog-empty">' + tr('暂无更新记录') + '</div>';
+    } else {
+      $('#detailChangelog').innerHTML = list.map(function (v) {
+        var tag = v.current ? ' <span class="tag ok">' + tr('当前版本') + '</span>' : '';
+        var date = v.date ? ' · ' + esc(v.date) : '';
+        var desc = v.description ? '<div class="change-desc">' + esc(v.description) + '</div>' : '';
+        return '<div class="change-item' + (v.current ? ' current' : '') + '">' +
+          '<div class="change-head"><span class="change-version">' + esc(v.version || '-') + '</span>' + tag +
+          '<span class="change-date">' + esc(date) + '</span></div>' + desc + '</div>';
+      }).join('');
+    }
+    var dlg = $('#detailDialog');
+    if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
+    else dlg.setAttribute('open', '');
+  }
+
   function openQr(app) {
     try { $('#qrImage').src = makeQr(app.install_url || ''); }
     catch (e) { alert(tr(e.message)); return; }
@@ -180,7 +245,9 @@
       var icon = a.icon_url ? '<img class="app-icon" src="' + esc(a.icon_url) + '" alt="">'
                            : '<img class="app-icon" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">';
       return '<div class="card">' +
-        '<div class="card-head">' + icon + '<div><div class="app-title" data-i18n-skip>' + esc(a.name) + '</div>' +
+        '<div class="card-head">' + icon + '<div>' +
+          '<div class="app-title-row"><div class="app-title" data-i18n-skip>' + esc(a.name) + '</div>' +
+            '<button class="detail-btn" type="button" data-detail="' + esc(a.id) + '">' + tr('详情') + '</button></div>' +
           '<div class="app-line mono">' + esc(a.bundle_id) + '</div></div></div>' +
         '<div class="install-meta">' +
           '<div>版本 <b>' + esc(a.version) + '</b></div>' +
@@ -197,6 +264,12 @@
       b.onclick = function () {
         var item = list.find(function (x) { return x.id === b.dataset.qr; });
         if (item) openQr(item);
+      };
+    });
+    Array.prototype.forEach.call(grid.querySelectorAll('button[data-detail]'), function (b) {
+      b.onclick = function () {
+        var item = list.find(function (x) { return x.id === b.dataset.detail; });
+        if (item) openDetail(item);
       };
     });
   }).catch(function () { $('#empty').hidden = false; });

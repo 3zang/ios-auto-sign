@@ -131,7 +131,7 @@ func pollLoop(ctx context.Context, cfg config.Config, st *store.Store, src *sour
 	}
 
 	run := func() {
-		now := time.Now()
+		dueNow := time.Now()
 
 		// Snapshot the work we must do. Only plain values are kept across the
 		// Sync calls below, because the underlying store pointers are replaced
@@ -158,7 +158,7 @@ func pollLoop(ctx context.Context, cfg config.Config, st *store.Store, src *sour
 					}
 					iv := effectiveInterval(u.SourceIntervals[s.ID], s.IntervalMinutes)
 					since := u.SourceNotifiedAt[s.ID]
-					if since.IsZero() || now.Sub(since) >= time.Duration(iv)*time.Minute {
+					if since.IsZero() || dueNow.Sub(since) >= time.Duration(iv)*time.Minute {
 						sinceCopy := since
 						due = append(due, duePair{uid: u.ID, srcID: s.ID, since: sinceCopy})
 						needSync[s.ID] = true
@@ -182,6 +182,12 @@ func pollLoop(ctx context.Context, cfg config.Config, st *store.Store, src *sour
 			cancel()
 		}
 
+		// Advance the notification cursor to a timestamp taken AFTER every Sync
+		// above. Sync stamps newly detected versions with its own time.Now(),
+		// which is later than dueNow; using dueNow as the cursor would leave
+		// DetectedAt > cursor and push the same version again on the next tick.
+		cursor := time.Now()
+
 		// Notify each due user of versions they have not been told about yet.
 		// Group SourceNotifiedAt writes per user to limit store churn.
 		userTouch := map[string][]string{}
@@ -196,12 +202,18 @@ func pollLoop(ctx context.Context, cfg config.Config, st *store.Store, src *sour
 			if len(ups) == 0 {
 				continue
 			}
+			for _, up := range ups {
+				log.Printf("poll: update: user=%s source=%s app=%q version=%q bundle=%q",
+					p.uid, p.srcID, up.AppName, up.Version, up.BundleID)
+			}
 			if n := bark.NotifyUpdates(ctx, ups, p.uid); n > 0 {
 				log.Printf("poll: sent %d bark notification(s) to user %s for source %s", n, p.uid, p.srcID)
 			}
 		}
 
-		// Advance every touched user's notification cursor to now.
+		// Advance every touched user's notification cursor past everything
+		// detected in this run. See the cursor note above for why this must not
+		// be dueNow.
 		if len(userTouch) > 0 {
 			_ = st.Update(func(d *store.Data) error {
 				for uid, srcs := range userTouch {
@@ -213,7 +225,7 @@ func pollLoop(ctx context.Context, cfg config.Config, st *store.Store, src *sour
 						u.SourceNotifiedAt = map[string]time.Time{}
 					}
 					for _, sid := range srcs {
-						u.SourceNotifiedAt[sid] = now
+						u.SourceNotifiedAt[sid] = cursor
 					}
 				}
 				return nil
