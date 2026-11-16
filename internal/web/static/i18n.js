@@ -54,6 +54,8 @@
     '已恢复为软件源默认间隔': 'Reverted to source default interval',
     '恢复为软件源默认间隔': 'Revert to source default',
     '详情': 'Details',
+    '关闭详情': 'Close details',
+    '返回首页': 'Back to home',
     '当前版本': 'Current version',
     '暂无更新记录': 'No update history yet',
     '角色': 'Role',
@@ -112,6 +114,7 @@
     '签名成功 / 失败': 'Signing succeeded / failed',
     '已发布产物': 'Published artifacts',
     '安装地址': 'Install URL',
+    '点击打开安装页': 'Open install page',
     '生成模式': 'mode',
     '流程：订阅源刷新 → 勾选应用并保存配置 → 上传 p12 / 密码 / mobileprovision → 自动签名 → 安装页出现可安装版本。检测到新版本时会按应用推送 Bark 通知，签名任务记录仅保留最近 5 条。':
       'Flow: refresh a source → select apps and save config → upload p12 / password / mobileprovision → automatic signing → installable versions appear. New versions trigger per-app Bark alerts; only the latest 5 signing jobs are kept.',

@@ -238,7 +238,8 @@
           '<div class="server-card">' +
             '<span class="server-icon" aria-hidden="true">↓</span>' +
             '<div><span class="server-label">安装地址</span>' +
-              '<span class="server-value mono">' + esc(pub.public_base_url) + '/install</span></div>' +
+              '<a class="server-value server-link mono" href="' + esc(pub.public_base_url) + '/install" target="_blank" rel="noopener" title="' + tr('点击打开安装页') + '">' +
+                esc(pub.public_base_url) + '/install</a></div>' +
           '</div>' +
           '<p class="panel-note">plist 生成模式 <b>' + esc(pub.plist_mode) + '</b> · 每应用保留最近 ' +
             pub.keep_versions + ' 个版本 · 每 ' + pub.poll_minutes + ' 分钟轮询一次。</p>' +
@@ -983,7 +984,9 @@
       var icon = a.icon_url ? '<img src="' + esc(a.icon_url) + '" alt="">'
         : '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">';
       return '<div class="card">' +
-        '<div class="card-head">' + icon + '<div><div class="name" data-i18n-skip>' + esc(a.name) + '</div>' +
+        '<div class="card-head">' + icon + '<div>' +
+          '<div class="app-title-row"><div class="name" data-i18n-skip>' + esc(a.name) + '</div>' +
+            '<button class="detail-btn" type="button" data-detail="' + esc(a.id) + '">' + tr('详情') + '</button></div>' +
           '<div class="sub mono">' + esc(a.bundle_id) + '</div></div></div>' +
         '<div class="install-meta">' +
           '<div>版本 <b>' + esc(a.version) + '</b></div>' +
@@ -1002,6 +1005,52 @@
         var item = list.find(function (x) { return x.id === b.dataset.qr; });
         if (item) openQrDialog(item);
       };
+    });
+    $$('#panel-install button[data-detail]').forEach(function (b) {
+      b.onclick = function () {
+        var item = list.find(function (x) { return x.id === b.dataset.detail; });
+        if (item) openDetailDialog(item);
+      };
+    });
+  }
+
+  // ---------- app detail / changelog dialog (install tab) ----------
+  function closeDetailDialog() {
+    var dlg = $('#detailDialog');
+    if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+    else dlg.removeAttribute('open');
+  }
+
+  function openDetailDialog(app) {
+    $('#detailDialogTitle').textContent = app.name || '';
+    $('#detailDialogBundle').textContent = app.bundle_id || '';
+    // changelog 由后端按 DetectedAt 倒序，只展示最新一条更新记录。
+    var list = Array.isArray(app.changelog) ? app.changelog : [];
+    var latest = list.length ? [list[0]] : [];
+    if (!latest.length) {
+      $('#detailChangelog').innerHTML = '<div class="changelog-empty">' + tr('暂无更新记录') + '</div>';
+    } else {
+      $('#detailChangelog').innerHTML = latest.map(function (v) {
+        var tag = v.current ? ' <span class="tag ok">' + tr('当前版本') + '</span>' : '';
+        var date = v.date ? ' · ' + esc(v.date) : '';
+        var desc = v.description ? '<div class="change-desc">' + esc(v.description) + '</div>' : '';
+        return '<div class="change-item' + (v.current ? ' current' : '') + '">' +
+          '<div class="change-head"><span class="change-version">' + esc(v.version || '-') + '</span>' + tag +
+          '<span class="change-date">' + esc(date) + '</span></div>' + desc + '</div>';
+      }).join('');
+    }
+    var dlg = $('#detailDialog');
+    if (typeof dlg.showModal === 'function') {
+      if (!dlg.open) dlg.showModal();
+    } else {
+      dlg.setAttribute('open', '');
+    }
+  }
+
+  function bindDetailDialog() {
+    $('#closeDetailButton').onclick = closeDetailDialog;
+    $('#detailDialog').addEventListener('click', function (e) {
+      if (e.target === $('#detailDialog')) closeDetailDialog();
     });
   }
 
@@ -1199,6 +1248,7 @@
     bindAuth();
     bindQrDialog();
     bindIconDialog();
+    bindDetailDialog();
     try {
       me = await api('/api/me');
     } catch (e) {
@@ -1228,6 +1278,19 @@
     $$('.tab').forEach(function (b) {
       b.onclick = function () { switchTab(b.dataset.tab); };
     });
+    // Clicking the top-left brand/logo returns to the home (overview) tab.
+    var brand = $('.topbar .brand');
+    if (brand) {
+      brand.setAttribute('role', 'link');
+      brand.setAttribute('tabindex', '0');
+      brand.setAttribute('title', tr('返回首页'));
+      brand.style.cursor = 'pointer';
+      var goHome = function () { switchTab('overview'); };
+      brand.addEventListener('click', goHome);
+      brand.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goHome(); }
+      });
+    }
     var initialTab = 'overview';
     try {
       var remembered = sessionStorage.getItem('ias-active-tab');

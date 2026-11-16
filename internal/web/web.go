@@ -1033,20 +1033,11 @@ func (s *Server) installApps(w http.ResponseWriter, r *http.Request, u *store.Us
 
 // installManifest serves a PWA manifest scoped to the install page so that
 // "Add to Home Screen" opens /install (not the admin root) and labels the icon
-// with this instance's name instead of the generic product name.
+// simply "应用安装" rather than the product or instance name.
 func (s *Server) installManifest(w http.ResponseWriter, _ *http.Request) {
-	title := strings.TrimSpace(s.siteTitle())
-	if title == "" {
-		title = store.DefaultSiteTitle
-	}
-	short := title
-	runes := []rune(short)
-	if len(runes) > 12 {
-		short = string(runes[:12])
-	}
 	manifest := map[string]any{
-		"name":             title + " 应用安装",
-		"short_name":       short,
+		"name":             "应用安装",
+		"short_name":       "应用安装",
 		"description":      "iOS 应用安装",
 		"start_url":        "/install",
 		"scope":            "/install",
