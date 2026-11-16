@@ -32,6 +32,31 @@
   }
   function fmtSize(n) { return n ? (n / 1048576).toFixed(1) + ' MB' : '-'; }
 
+  // Human-readable server uptime. Built from the boot-time snapshot plus
+  // elapsed wall time so it ticks up live without re-fetching the API.
+  // Uses explicit locale units instead of i18n partial replacement, so short
+  // words like "天" / "小时" can never corrupt other UI strings.
+  var uptimeBase = 0, uptimeAnchor = 0;
+  function formatUptime(seconds) {
+    seconds = Math.max(0, Math.floor(seconds || 0));
+    var d = Math.floor(seconds / 86400);
+    var h = Math.floor((seconds % 86400) / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    var s = seconds % 60;
+    var en = window.IASI18N && window.IASI18N.lang === 'en';
+    if (en) {
+      if (d) return d + 'd ' + h + 'h ' + m + 'm';
+      if (h) return h + 'h ' + m + 'm ' + s + 's';
+      return m + 'm ' + s + 's';
+    }
+    if (d) return d + ' 天 ' + h + ' 小时 ' + m + ' 分钟';
+    if (h) return h + ' 小时 ' + m + ' 分钟';
+    return m + ' 分钟 ' + s + ' 秒';
+  }
+  function currentUptime() {
+    return uptimeBase + (Date.now() - uptimeAnchor) / 1000;
+  }
+
   // Per-app version update detail: the latest version's changelog, truncated
   // The card only shows a "更多" button; clicking it opens a floating popup
   // (appended to <body>, so it is never clipped by the card's overflow:hidden
@@ -149,6 +174,9 @@
   var currentJobs = [];
   var artPage = 1;
   var artPageSize = 10;
+  var installPage = 1;
+  var installPageSize = 12;
+  var installList = [];
 
   function applySiteTitle(title) {
     var t = String(title || '').trim() || 'iOS 自动签名';
@@ -234,6 +262,7 @@
             '<div><span>应用（已配置 / 全部）</span><b>' + configuredApps + ' / ' + apps.length + '</b></div>' +
             '<div><span>签名成功 / 失败</span><b>' + ok + ' / ' + bad + '</b></div>' +
             '<div><span>已发布产物</span><b>' + arts.length + '</b></div>' +
+            '<div class="stat-uptime"><span>' + tr('服务器已运行时长') + '</span><b id="uptime-value">' + esc(formatUptime(currentUptime())) + '</b></div>' +
           '</div>' +
           '<div class="server-card">' +
             '<span class="server-icon" aria-hidden="true">↓</span>' +
@@ -952,26 +981,34 @@
       var roleTag = u.role === 'admin'
         ? '<span class="tag ok">' + tr('管理员') + '</span>'
         : '<span class="tag">' + tr('普通用户') + '</span>';
+      var isSelf = u.id === me.id;
+      var delBtn = isSelf
+        ? '<button class="danger" disabled title="' + tr('不能删除当前登录的账号') + '">' + tr('删除') + '</button>'
+        : '<button class="danger" data-action="delete-user" data-id="' + esc(u.id) + '" data-name="' + esc(u.username) + '">' + tr('删除') + '</button>';
       return '<tr>' +
         '<td data-i18n-skip><b>' + esc(u.username) + '</b></td>' +
         '<td>' + roleTag + '</td>' +
         '<td class="mono">' + esc(fmtDateTime(u.created_at)) + '</td>' +
+        '<td>' + delBtn + '</td>' +
       '</tr>';
     }).join('');
     panel.innerHTML =
       '<p class="section-kicker">USERS</p>' +
       '<h2>已注册用户</h2>' +
-      '<div class="hint">' + list.length + ' 位用户已注册。</div>' +
-      '<table><thead><tr><th>用户名</th><th>角色</th><th>注册时间</th></tr></thead>' +
-      '<tbody>' + (rows || '<tr><td colspan="3" class="muted">暂无用户</td></tr>') + '</tbody></table>';
+      '<div class="hint">' + list.length + ' 位用户已注册。删除用户会同时移除其个人配置、通知设置与登录会话。</div>' +
+      '<table><thead><tr><th>用户名</th><th>角色</th><th>注册时间</th><th>' + tr('操作') + '</th></tr></thead>' +
+      '<tbody>' + (rows || '<tr><td colspan="4" class="muted">暂无用户</td></tr>') + '</tbody></table>';
   };
 
   // ---------- install (account scoped, shown as a tab) ----------
   loaders.install = async function () {
-    renderInstall(await api('/api/install/apps'));
+    installList = await api('/api/install/apps');
+    installList.sort(function (a, b) { return new Date(b.updated_at) - new Date(a.updated_at); });
+    renderInstall();
   };
 
-  function renderInstall(list) {
+  function renderInstall() {
+    var list = installList;
     var head = '<p class="section-kicker">INSTALL</p><h2>安装</h2>' +
       '<div class="hint">仅显示当前账号可安装的应用。请用 iPhone 相机扫描二维码，或在 iOS Safari 中打开安装页。</div>';
     if (!list.length) {
@@ -979,8 +1016,13 @@
         '<div class="empty-state">暂无可安装的应用。请先在「应用与配置」中启用自动签名并上传证书。</div>';
       return;
     }
-    list.sort(function (a, b) { return new Date(b.updated_at) - new Date(a.updated_at); });
-    var cards = list.map(function (a) {
+    // Paginate the newest-first list so a large catalogue stays snappy.
+    var pages = Math.max(1, Math.ceil(list.length / installPageSize));
+    if (installPage > pages) installPage = pages;
+    if (installPage < 1) installPage = 1;
+    var start = (installPage - 1) * installPageSize;
+    var pageItems = list.slice(start, start + installPageSize);
+    var cards = pageItems.map(function (a) {
       var icon = a.icon_url ? '<img src="' + esc(a.icon_url) + '" alt="">'
         : '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">';
       return '<div class="card">' +
@@ -999,7 +1041,15 @@
             '<span class="qr-mini" aria-hidden="true"></span>二维码</button>' +
         '</div></div>';
     }).join('');
-    $('#panel-install').innerHTML = head + '<div class="card-grid" style="margin-top:18px">' + cards + '</div>';
+    var pager = (pages > 1 ? '<div class="pager">' +
+      '<button data-page="prev"' + (installPage <= 1 ? ' disabled' : '') + '>' + tr('上一页') + '</button>' +
+      '<span class="pager-info">' + tr('第') + ' ' + installPage + ' / ' + pages + ' ' + tr('页') + ' · ' + tr('共') + ' ' + list.length + ' ' + tr('条') + '</span>' +
+      '<button data-page="next"' + (installPage >= pages ? ' disabled' : '') + '>' + tr('下一页') + '</button>' +
+      '<label class="pager-size">' + tr('每页') + '<select data-page-size>' +
+        [6, 12, 24, 48].map(function (n) { return '<option value="' + n + '"' + (n === installPageSize ? ' selected' : '') + '>' + n + '</option>'; }).join('') +
+      '</select>' + tr('条') + '</label>' +
+    '</div>' : '');
+    $('#panel-install').innerHTML = head + '<div class="card-grid" style="margin-top:18px">' + cards + '</div>' + pager;
     $$('#panel-install button[data-qr]').forEach(function (b) {
       b.onclick = function () {
         var item = list.find(function (x) { return x.id === b.dataset.qr; });
@@ -1012,6 +1062,23 @@
         if (item) openDetailDialog(item);
       };
     });
+    var pagesFinal = Math.max(1, Math.ceil(list.length / installPageSize));
+    $$('#panel-install button[data-page]').forEach(function (b) {
+      b.onclick = function () {
+        if (b.dataset.page === 'prev' && installPage > 1) installPage--;
+        else if (b.dataset.page === 'next' && installPage < pagesFinal) installPage++;
+        else return;
+        renderInstall();
+      };
+    });
+    var sizeSel = $('#panel-install select[data-page-size]');
+    if (sizeSel) {
+      sizeSel.onchange = function () {
+        installPageSize = Number(sizeSel.value) || 12;
+        installPage = 1;
+        renderInstall();
+      };
+    }
   }
 
   // ---------- app detail / changelog dialog (install tab) ----------
@@ -1237,6 +1304,20 @@
           await loaders.jobs();
           break;
         }
+        case 'delete-user': {
+          var name = btn.dataset.name || id;
+          if (!confirm(tr('确定删除用户「') + name + tr('」？其个人配置、通知设置与登录会话将一并移除，此操作不可撤销。'))) return;
+          btn.disabled = true;
+          try {
+            await api('/api/users/' + encodeURIComponent(id), { method: 'DELETE' });
+            toast(tr('已删除用户'));
+            await loaders.users();
+          } catch (err) {
+            btn.disabled = false;
+            throw err;
+          }
+          break;
+        }
       }
     } catch (err) { fail(err); }
   });
@@ -1266,6 +1347,9 @@
       if (me.role !== 'admin') { b.hidden = true; b.style.display = 'none'; }
     });
     try { pub = await api('/api/config/public'); } catch (e) { pub = {}; }
+    // Anchor the live uptime display to the value reported at boot.
+    uptimeBase = Number(pub.uptime_seconds) || 0;
+    uptimeAnchor = Date.now();
     applySiteTitle(pub.site_title);
     if (pub.version) {
       var badge = $('#app-version');
@@ -1299,5 +1383,10 @@
       }
     } catch (e) { /* storage may be unavailable */ }
     await switchTab(initialTab);
+    // Keep the overview uptime stat ticking without re-fetching the API.
+    setInterval(function () {
+      var el = $('#uptime-value');
+      if (el) el.textContent = formatUptime(currentUptime());
+    }, 1000);
   })();
 })();

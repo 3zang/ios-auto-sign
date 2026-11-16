@@ -448,3 +448,84 @@ func TestListAppsHidesStaleRowsAndReportsSource(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicConfigIncludesUptime(t *testing.T) {
+	s, _ := newTestServer(t)
+	// Move the recorded start back so a non-zero uptime is reported.
+	s.started = time.Now().Add(-3*time.Hour - 5*time.Minute)
+	rr := httptest.NewRecorder()
+	s.publicConfig(rr, httptest.NewRequest(http.MethodGet, "http://localhost/api/config/public", nil))
+	var pub map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &pub); err != nil {
+		t.Fatal(err)
+	}
+	up, ok := pub["uptime_seconds"].(float64)
+	if !ok {
+		t.Fatalf("uptime_seconds missing or not numeric: %v", pub["uptime_seconds"])
+	}
+	want := (3*time.Hour + 5*time.Minute).Seconds()
+	if up < want-5 || up > want+5 {
+		t.Errorf("uptime_seconds = %v, want ~%v", up, want)
+	}
+}
+
+func TestDeleteUser(t *testing.T) {
+	s, st := newTestServer(t)
+	if err := st.Update(func(d *store.Data) error {
+		d.Users["admin"] = &store.User{ID: "admin", Username: "admin", Role: "admin"}
+		d.Users["admin2"] = &store.User{ID: "admin2", Username: "admin2", Role: "admin"}
+		d.Users["u1"] = &store.User{ID: "u1", Username: "u1", Role: "user"}
+		d.Sessions["tok-u1"] = &store.Session{Token: "tok-u1", UserID: "u1"}
+		d.Sessions["tok-admin"] = &store.Session{Token: "tok-admin", UserID: "admin"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	admin := &store.User{ID: "admin", Role: "admin"}
+	del := func(actor *store.User, id string) int {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/api/users/"+id, nil)
+		req.SetPathValue("id", id)
+		s.deleteUser(rr, req, actor)
+		return rr.Code
+	}
+
+	// Non-admin is forbidden.
+	if got := del(&store.User{ID: "u1", Role: "user"}, "u1"); got != http.StatusForbidden {
+		t.Errorf("non-admin delete = %d, want 403", got)
+	}
+	// Self-delete is refused.
+	if got := del(admin, "admin"); got != http.StatusBadRequest {
+		t.Errorf("self delete = %d, want 400", got)
+	}
+	// Unknown user is 404.
+	if got := del(admin, "missing"); got != http.StatusNotFound {
+		t.Errorf("missing user delete = %d, want 404", got)
+	}
+	// A regular user is deleted along with its sessions.
+	if got := del(admin, "u1"); got != http.StatusOK {
+		t.Fatalf("delete u1 = %d, want 200", got)
+	}
+	st.View(func(d *store.Data) {
+		if d.Users["u1"] != nil {
+			t.Error("u1 still present after delete")
+		}
+		if d.Sessions["tok-u1"] != nil {
+			t.Error("u1 session still present after delete")
+		}
+		if d.Sessions["tok-admin"] == nil {
+			t.Error("admin session was removed")
+		}
+	})
+
+	// The last administrator cannot be deleted.
+	if err := st.Update(func(d *store.Data) error {
+		delete(d.Users, "admin2")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := del(&store.User{ID: "admin2", Role: "admin"}, "admin"); got != http.StatusConflict {
+		t.Errorf("last admin delete = %d, want 409", got)
+	}
+}

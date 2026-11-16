@@ -62,6 +62,13 @@
     '管理员': 'Admin',
     '普通用户': 'User',
     '注册时间': 'Registered',
+    '操作': 'Actions',
+    '删除': 'Delete',
+    '服务器已运行时长': 'Server uptime',
+    '不能删除当前登录的账号': 'Cannot delete the account you are logged in with',
+    '确定删除用户「': 'Delete user "',
+    '」？其个人配置、通知设置与登录会话将一并移除，此操作不可撤销。': '"? Their personal settings, notification config and sessions will be removed. This cannot be undone.',
+    '已删除用户': 'User deleted',
 
     // ---- log viewer ----
     '运行日志': 'Server log',

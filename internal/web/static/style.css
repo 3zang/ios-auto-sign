@@ -332,6 +332,10 @@ button:disabled { opacity: .5; cursor: default; transform: none; }
 .hero-stats > div { padding: 14px 16px; background: var(--surface-strong); }
 .hero-stats span { color: var(--text-secondary); font-size: 12px; }
 .hero-stats b { display: block; margin-top: 2px; font-size: 23px; font-weight: 680; letter-spacing: -.035em; }
+/* Uptime spans both columns with its value beside the label, so the numeric
+   duration never wraps inside a half-width stat cell. */
+.hero-stats > .stat-uptime { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hero-stats > .stat-uptime b { margin-top: 0; font-size: 17px; white-space: nowrap; }
 .server-card { position: relative; z-index: 1; display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-muted); }
 .server-icon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 11px; background: var(--blue); color: #fff; font-size: 15px; font-weight: 700; }
 .server-card > div { min-width: 0; }

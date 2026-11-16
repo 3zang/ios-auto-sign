@@ -75,6 +75,7 @@ type Server struct {
 	client   *http.Client
 	notifier *notify.Sender
 	logBuf   *LogBuffer
+	started  time.Time // process start time, used to report server uptime
 }
 
 func New(cfg config.Config, st *store.Store, a *auth.Manager, src *source.Service,
@@ -85,7 +86,8 @@ func New(cfg config.Config, st *store.Store, a *auth.Manager, src *source.Servic
 	lb := NewLogBuffer(2000, os.Stderr)
 	log.SetOutput(lb)
 	return &Server{cfg: cfg, st: st, auth: a, sources: src, signing: sign,
-		gen: gen, key: key, client: client, notifier: notify.New(st, client), logBuf: lb}
+		gen: gen, key: key, client: client, notifier: notify.New(st, client), logBuf: lb,
+		started: time.Now()}
 }
 
 // requestBaseURL derives the externally visible base from the current
@@ -199,6 +201,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sync/run", s.auth.Require(s.runNow))
 	mux.HandleFunc("GET /api/logs", s.auth.Require(s.listLogs))
 	mux.HandleFunc("GET /api/users", s.auth.Require(s.listUsers))
+	mux.HandleFunc("DELETE /api/users/{id}", s.auth.Require(s.deleteUser))
 
 	// Installation data is account-scoped. The legacy public path is kept as
 	// an alias but now uses the same authenticated, filtered handler.
@@ -267,6 +270,7 @@ func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
 		"https_required":  strings.HasPrefix(base, "https://"),
 		"plist_server":    s.cfg.Plist.PlistServerURL,
 		"ipa_base_url":    base,
+		"uptime_seconds":  int64(time.Since(s.started).Seconds()),
 	})
 }
 
@@ -1388,3 +1392,58 @@ func (s *Server) listUsers(w http.ResponseWriter, _ *http.Request, u *store.User
 	})
 	writeJSON(w, http.StatusOK, out)
 }
+
+// deleteUser removes an account and invalidates all of its sessions. It is
+// administrative only, and refuses to delete the caller or the last remaining
+// administrator so the console can never be locked out.
+func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if u.Role != "admin" {
+		writeError(w, http.StatusForbidden, errors.New("administrator only"))
+		return
+	}
+	id := r.PathValue("id")
+	if id == u.ID {
+		writeError(w, http.StatusBadRequest, errors.New("cannot delete yourself"))
+		return
+	}
+	if err := s.st.Update(func(d *store.Data) error {
+		target := d.Users[id]
+		if target == nil {
+			return errUserNotFound
+		}
+		if target.Role == "admin" {
+			admins := 0
+			for _, usr := range d.Users {
+				if usr.Role == "admin" {
+					admins++
+				}
+			}
+			if admins <= 1 {
+				return errLastAdmin
+			}
+		}
+		delete(d.Users, id)
+		for token, sess := range d.Sessions {
+			if sess.UserID == id {
+				delete(d.Sessions, token)
+			}
+		}
+		return nil
+	}); err != nil {
+		switch {
+		case errors.Is(err, errUserNotFound):
+			writeError(w, http.StatusNotFound, err)
+		case errors.Is(err, errLastAdmin):
+			writeError(w, http.StatusConflict, err)
+		default:
+			writeError(w, http.StatusBadRequest, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+var (
+	errUserNotFound = errors.New("user not found")
+	errLastAdmin    = errors.New("cannot delete the last administrator")
+)
