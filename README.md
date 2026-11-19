@@ -403,6 +403,10 @@ https://api.palera.in/genPlist?bundleid=<bundle id>&fetchurl=<URL 编码后的 I
 
 `fetchurl` 中的 IPA 地址由当前请求的 Host 实时生成，因此换 IP、换域名、走反向代理都不需要改配置。
 
+### 运行时切换（管理端）
+
+管理员可在「设置中心 → 安装清单模式」随时在内置生成与远程 `/genPlist` 之间切换，并填写远程服务地址。该设置保存在服务端数据仓库中，**优先于 `config.json` 的 `plist.mode`**：未设置时才回退到启动配置。切换立即生效，无需重启；`/healthz` 与公开配置中的 `plist_mode` 实时反映当前有效模式。默认使用内置模式，不依赖任何第三方服务。
+
 ### HTTPS 要求（重要）
 
 iOS 的 OTA 安装要求 **manifest、IPA、图标 URL 全部通过受信任的 HTTPS 提供**。局域网 HTTP 地址通常可以生成链接，但设备会拒绝安装。生产部署请配置域名与证书（例如 Caddy 自动签发），并通过反向代理把 `X-Forwarded-Proto: https` 和 `X-Forwarded-Host` 传给本服务。

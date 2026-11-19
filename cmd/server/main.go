@@ -13,7 +13,6 @@ import (
 	"ios-auto-sign/internal/auth"
 	"ios-auto-sign/internal/config"
 	"ios-auto-sign/internal/notify"
-	"ios-auto-sign/internal/plist"
 	"ios-auto-sign/internal/secure"
 	"ios-auto-sign/internal/signing"
 	"ios-auto-sign/internal/source"
@@ -41,15 +40,11 @@ func main() {
 		log.Fatalf("store: %v", err)
 	}
 	client := &http.Client{Timeout: time.Duration(cfg.HTTPTimeoutSeconds) * time.Second}
-	gen, err := plist.New(cfg.Plist.Mode, cfg.Plist.PlistServerURL, client)
-	if err != nil {
-		log.Fatalf("plist generator: %v", err)
-	}
 
 	authMgr := auth.New(st, cfg.PublicBaseURL)
 	sourceSvc := source.New(st, client)
 	signMgr := signing.New(st, cfg, key, client)
-	server := web.New(cfg, st, authMgr, sourceSvc, signMgr, gen, key, client)
+	server := web.New(cfg, st, authMgr, sourceSvc, signMgr, key, client)
 
 	// Notifications are driven by sync results from pollLoop and the HTTP
 	// handlers, not by an implicit source hook, so background detection and
@@ -75,7 +70,7 @@ func main() {
 	}()
 
 	log.Printf("plist mode=%s  zsign=%s  keep_versions=%d  data=%s",
-		gen.Mode(), cfg.ZsignPath, cfg.KeepVersions, cfg.DataDir)
+		server.PlistMode(), cfg.ZsignPath, cfg.KeepVersions, cfg.DataDir)
 	if _, err := os.Stat(cfg.ZsignPath); err != nil {
 		log.Printf("WARNING: zsign not found at %s - signing jobs will fail until it is installed", cfg.ZsignPath)
 	}

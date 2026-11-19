@@ -178,9 +178,14 @@ const DefaultSiteTitle = "iOS 自动签名"
 // per-source refresh intervals) live on the User record instead, so one user's
 // choices never affect another.
 type Settings struct {
-	SiteTitle    string    `json:"site_title"`
-	KeepVersions int       `json:"keep_versions"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	SiteTitle    string `json:"site_title"`
+	KeepVersions int    `json:"keep_versions"`
+	// PlistMode and PlistServerURL are the administrator-controlled OTA
+	// manifest settings. Empty values fall back to the startup config file,
+	// so existing deployments keep their current behaviour until changed.
+	PlistMode      string    `json:"plist_mode,omitempty"`
+	PlistServerURL string    `json:"plist_server_url,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // BarkConfig is a user's personal Bark push target. It is stored on the User so

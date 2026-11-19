@@ -285,6 +285,15 @@
     '发送测试推送': 'Send test notification',
     '设置已保存': 'Settings saved',
     '测试推送已发送，请查看手机通知': 'Test notification sent, check your phone',
+    '安装清单模式': 'Install manifest mode',
+    '内置模式由本服务器直接生成 OTA 安装清单（plist），不依赖任何第三方服务；远程模式把 iOS 指向外部 /genPlist 服务。切换后立即生效。':
+      'Builtin mode has this server generate the OTA manifest (plist) directly, with no third-party dependency. Remote mode points iOS at an external /genPlist service. Changes apply immediately.',
+    'plist 模式': 'plist mode',
+    '内置生成（推荐）': 'Builtin (recommended)',
+    '远程服务（/genPlist）': 'Remote service (/genPlist)',
+    '远程服务地址': 'Remote service URL',
+    '远程服务': 'Remote service',
+    '内置生成': 'Builtin',
 
     // ---- install ----
     '应用安装': 'App installation',

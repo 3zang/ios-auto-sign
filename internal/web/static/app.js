@@ -809,11 +809,19 @@
       '<label>提示音（可选）<input name="bark_sound" value="' + esc(st.bark_sound) + '" placeholder="default"></label>' +
       '<label>跳转链接（可选）<input name="bark_url" value="' + esc(st.bark_url) + '" placeholder="点击通知后打开的地址，留空则不携带"></label>';
 
+    var plistHTML =
+      '<div><h3>安装清单模式</h3><p class="settings-note">内置模式由本服务器直接生成 OTA 安装清单（plist），不依赖任何第三方服务；远程模式把 iOS 指向外部 /genPlist 服务。切换后立即生效。</p></div>' +
+      '<label>plist 模式<select name="plist_mode" id="plist-mode">' +
+        '<option value="builtin"' + (st.plist_mode !== 'plistserver' ? ' selected' : '') + '>内置生成（推荐）</option>' +
+        '<option value="plistserver"' + (st.plist_mode === 'plistserver' ? ' selected' : '') + '>远程服务（/genPlist）</option>' +
+      '</select></label>' +
+      '<label id="plist-server-field"' + (st.plist_mode === 'plistserver' ? '' : ' style="display:none"') + '>远程服务地址<input name="plist_server_url" value="' + esc(st.plist_server_url || '') + '" placeholder="https://example.com/genPlist"></label>';
+
     if (!st.editable) {
       $('#panel-settings').innerHTML =
         '<p class="section-kicker">SETTINGS</p><h2>设置中心</h2>' +
-        '<div class="hint">当前站点标题：<b>' + esc(st.site_title) + '</b>。全局设置（标题、版本保留）仅管理员可修改；下方的 Bark 通知为你的个人配置。</div>' +
-        '<div class="hint" style="margin-top:14px">当前每应用保留最近 <b>' + (st.keep_versions || pub.keep_versions || 2) + '</b> 个已签名版本。</div>' +
+        '<div class="hint">当前站点标题：<b>' + esc(st.site_title) + '</b>。全局设置（标题、版本保留、安装清单模式）仅管理员可修改；下方的 Bark 通知为你的个人配置。</div>' +
+        '<div class="hint" style="margin-top:14px">当前每应用保留最近 <b>' + (st.keep_versions || pub.keep_versions || 2) + '</b> 个已签名版本；安装清单模式：<b>' + (st.plist_mode === 'plistserver' ? '远程服务' : '内置生成') + '</b>。</div>' +
         '<form id="settings-form" class="stack settings-card">' +
           barkHTML +
           '<div class="settings-actions">' +
@@ -832,6 +840,8 @@
         '<div class="settings-divider"></div>' +
         '<div><h3>' + tr('版本保留') + '</h3><p class="settings-note">' + tr('每个应用最多保留的已签名版本数量；超过后最旧的版本会被自动清理，对应安装入口一并移除。') + '</p></div>' +
         '<label>' + tr('每应用保留版本数') + '<input name="keep_versions" type="number" min="1" max="50" value="' + (st.keep_versions || pub.keep_versions || 2) + '"></label>' +
+        '<div class="settings-divider"></div>' +
+        plistHTML +
         '<div class="settings-divider"></div>' +
         barkHTML +
         '<div class="settings-actions">' +
@@ -861,13 +871,29 @@
         if (keep > 50) keep = 50;
         body.site_title = f.site_title.value;
         body.keep_versions = keep;
+        body.plist_mode = f.plist_mode.value;
+        body.plist_server_url = f.plist_server_url ? f.plist_server_url.value : '';
       }
       try {
         var out = await api('/api/settings', json('PUT', body));
-        if (st.editable) applySiteTitle(out.site_title);
+        if (st.editable) {
+          applySiteTitle(out.site_title);
+          renderSettings(out);
+        }
         toast('设置已保存');
       } catch (err) { fail(err); }
     };
+    if (st.editable) {
+      var modeSel = $('#plist-mode');
+      var serverField = $('#plist-server-field');
+      var togglePlistServer = function () {
+        if (modeSel && serverField) {
+          serverField.style.display = modeSel.value === 'plistserver' ? '' : 'none';
+        }
+      };
+      if (modeSel) modeSel.addEventListener('change', togglePlistServer);
+      togglePlistServer();
+    }
     var testBtn = $('#bark-test');
     testBtn.onclick = async function () {
       var btn = this;

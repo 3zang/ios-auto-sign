@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"ios-auto-sign/internal/config"
-	"ios-auto-sign/internal/plist"
 	"ios-auto-sign/internal/store"
 )
 
@@ -33,11 +32,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gen, err := plist.New("builtin", "", http.DefaultClient)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return New(config.Default(), st, nil, nil, nil, gen, nil, http.DefaultClient), st
+	return New(config.Default(), st, nil, nil, nil, nil, http.DefaultClient), st
 }
 
 func TestInstallAppsAreAccountScopedAndUseRequestHost(t *testing.T) {
@@ -133,14 +128,12 @@ func TestInstallURLIsFullyEncodedInPlistServerMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gen, err := plist.New("plistserver", "https://api.palera.in/genPlist", http.DefaultClient)
-	if err != nil {
-		t.Fatal(err)
-	}
 	cfg := config.Default()
 	cfg.Plist.PlistServerURL = "https://api.palera.in/genPlist"
-	s := New(cfg, st, nil, nil, nil, gen, nil, http.DefaultClient)
+	s := New(cfg, st, nil, nil, nil, nil, http.DefaultClient)
 	if err := st.Update(func(d *store.Data) error {
+		d.Settings.PlistMode = "plistserver"
+		d.Settings.PlistServerURL = "https://api.palera.in/genPlist"
 		d.Artifacts["a1"] = &store.Artifact{
 			ID: "a1", UserID: "u1", DisplayName: "My App", BundleID: "com.one", Version: "2.0",
 		}
@@ -527,5 +520,147 @@ func TestDeleteUser(t *testing.T) {
 	}
 	if got := del(&store.User{ID: "admin2", Role: "admin"}, "admin"); got != http.StatusConflict {
 		t.Errorf("last admin delete = %d, want 409", got)
+	}
+}
+
+// The effective plist mode must come from the persisted store setting and fall
+// back to the startup config only when the store has no override.
+func TestEffectivePlistRuntimeSwitch(t *testing.T) {
+	cfg := config.Default()
+	cfg.Plist.Mode = "plistserver"
+	cfg.Plist.PlistServerURL = "https://config.example.com/genPlist"
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg, st, nil, nil, nil, nil, http.DefaultClient)
+
+	// No store override: config values win.
+	if mode, url := s.effectivePlist(); mode != "plistserver" || url != "https://config.example.com/genPlist" {
+		t.Fatalf("fallback = (%s, %s)", mode, url)
+	}
+
+	// Store override wins immediately, including switching back to builtin.
+	if err := st.Update(func(d *store.Data) error {
+		d.Settings.PlistMode = "builtin"
+		d.Settings.PlistServerURL = ""
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if mode, _ := s.effectivePlist(); mode != "builtin" {
+		t.Fatalf("runtime mode = %s, want builtin", mode)
+	}
+
+	// healthz / publicConfig reflect the switched mode without a restart.
+	rr := httptest.NewRecorder()
+	s.publicConfig(rr, httptest.NewRequest(http.MethodGet, "http://localhost/api/config/public", nil))
+	var pub map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &pub); err != nil {
+		t.Fatal(err)
+	}
+	if pub["plist_mode"] != "builtin" {
+		t.Errorf("public plist_mode = %v", pub["plist_mode"])
+	}
+}
+
+// Only an administrator may change the plist mode, values are validated, and
+// the change is persisted to the store.
+func TestPlistModeSaveIsAdminOnlyAndValidated(t *testing.T) {
+	s, st := newTestServer(t)
+	if err := st.Update(func(d *store.Data) error {
+		d.Users["u1"] = &store.User{ID: "u1", Username: "u1", Role: "user"}
+		d.Users["admin"] = &store.User{ID: "admin", Username: "admin", Role: "admin"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	save := func(body string, u *store.User) int {
+		rr := httptest.NewRecorder()
+		s.saveSettings(rr, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body)), u)
+		return rr.Code
+	}
+	user := &store.User{ID: "u1", Role: "user"}
+	admin := &store.User{ID: "admin", Role: "admin"}
+
+	// A regular user cannot change the plist mode even if they send the field.
+	body := `{"plist_mode":"plistserver","plist_server_url":"https://evil.example.com/genPlist"}`
+	if got := save(body, user); got != http.StatusOK {
+		t.Fatalf("user save status = %d", got)
+	}
+	if mode, _ := s.effectivePlist(); mode == "plistserver" {
+		t.Fatal("non-admin changed the plist mode")
+	}
+
+	// Admin: invalid mode is rejected.
+	if got := save(`{"plist_mode":"bogus"}`, admin); got != http.StatusBadRequest {
+		t.Errorf("invalid mode status = %d, want 400", got)
+	}
+	// Admin: remote mode without a URL is rejected.
+	if got := save(`{"plist_mode":"plistserver","plist_server_url":""}`, admin); got != http.StatusBadRequest {
+		t.Errorf("remote without URL status = %d, want 400", got)
+	}
+	// Admin: a bad URL is rejected.
+	if got := save(`{"plist_mode":"plistserver","plist_server_url":"not-a-url"}`, admin); got != http.StatusBadRequest {
+		t.Errorf("bad URL status = %d, want 400", got)
+	}
+
+	// Admin: valid switch is persisted and takes effect.
+	if got := save(`{"site_title":"T","keep_versions":2,"plist_mode":"plistserver","plist_server_url":"https://api.example.com/genPlist"}`, admin); got != http.StatusOK {
+		t.Fatalf("admin save status = %d", got)
+	}
+	mode, url := s.effectivePlist()
+	if mode != "plistserver" || url != "https://api.example.com/genPlist" {
+		t.Fatalf("after save = (%s, %s)", mode, url)
+	}
+	st.View(func(d *store.Data) {
+		if d.Settings.PlistMode != "plistserver" || d.Settings.PlistServerURL != "https://api.example.com/genPlist" {
+			t.Fatalf("not persisted: %+v", d.Settings)
+		}
+	})
+
+	// settingsView exposes the active mode to the UI.
+	rr := httptest.NewRecorder()
+	s.getSettings(rr, httptest.NewRequest(http.MethodGet, "/api/settings", nil), admin)
+	var view map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view["plist_mode"] != "plistserver" || view["plist_server_url"] != "https://api.example.com/genPlist" {
+		t.Errorf("settings view = %v", view)
+	}
+}
+
+// Switching the runtime mode to builtin must still yield a valid local
+// manifest, even though the process started in plistserver mode.
+func TestLocalManifestWorksAfterSwitchingToBuiltin(t *testing.T) {
+	cfg := config.Default()
+	cfg.Plist.Mode = "plistserver"
+	cfg.Plist.PlistServerURL = "https://config.example.com/genPlist"
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Update(func(d *store.Data) error {
+		d.Settings.PlistMode = "builtin"
+		d.Artifacts["a1"] = &store.Artifact{
+			ID: "a1", BundleID: "com.one", DisplayName: "My App", Version: "2.0",
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg, st, nil, nil, nil, nil, http.DefaultClient)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/manifest/a1.plist", nil)
+	req.SetPathValue("id", "a1.plist")
+	s.manifest(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("manifest status = %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "<plist") || !strings.Contains(rr.Body.String(), "com.one") {
+		t.Fatalf("manifest body is not a local plist: %s", rr.Body.String())
 	}
 }

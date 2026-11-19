@@ -70,7 +70,7 @@ type Server struct {
 	auth     *auth.Manager
 	sources  *source.Service
 	signing  *signing.Manager
-	gen      plist.Generator
+	gen      plist.Generator // builtin renderer for local manifest generation
 	key      *[32]byte
 	client   *http.Client
 	notifier *notify.Sender
@@ -79,14 +79,19 @@ type Server struct {
 }
 
 func New(cfg config.Config, st *store.Store, a *auth.Manager, src *source.Service,
-	sign *signing.Manager, gen plist.Generator, key *[32]byte, client *http.Client) *Server {
+	sign *signing.Manager, key *[32]byte, client *http.Client) *Server {
 	// Capture process log output into a ring buffer (still mirrored to stderr)
 	// so the console's "日志" tab can show recent server activity regardless of
 	// how stderr is redirected in the deployment.
 	lb := NewLogBuffer(2000, os.Stderr)
 	log.SetOutput(lb)
+	// Local manifest rendering always uses the builtin generator. Whether iOS
+	// is pointed at this endpoint or a remote /genPlist service is decided at
+	// request time by effectivePlist(), so switching the mode at runtime never
+	// leaves a stale remote generator behind.
+	local, _ := plist.New("builtin", "", client) // builtin never fails
 	return &Server{cfg: cfg, st: st, auth: a, sources: src, signing: sign,
-		gen: gen, key: key, client: client, notifier: notify.New(st, client), logBuf: lb,
+		gen: local, key: key, client: client, notifier: notify.New(st, client), logBuf: lb,
 		started: time.Now()}
 }
 
@@ -162,7 +167,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /", s.servePage("index.html"))
 	mux.HandleFunc("GET /install", s.servePage("install.html"))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "plist_mode": s.gen.Mode()})
+		mode, _ := s.effectivePlist()
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "plist_mode": mode})
 	})
 
 	mux.HandleFunc("POST /api/auth/register", s.register)
@@ -242,6 +248,35 @@ func (s *Server) siteTitle() string {
 	return t
 }
 
+// PlistMode returns the currently active manifest mode (runtime setting or
+// startup config fallback). It is exported for startup diagnostics.
+func (s *Server) PlistMode() string {
+	mode, _ := s.effectivePlist()
+	return mode
+}
+
+// effectivePlist returns the runtime plist mode and remote server URL. An
+// administrator can override both from the settings centre (persisted in the
+// store); empty values fall back to the startup config.json. Keeping this as a
+// per-request read means a mode switch takes effect immediately without any
+// mutable generator state or locking.
+func (s *Server) effectivePlist() (mode, serverURL string) {
+	var pm, pu string
+	s.st.View(func(d *store.Data) {
+		pm = d.Settings.PlistMode
+		pu = d.Settings.PlistServerURL
+	})
+	mode = strings.ToLower(strings.TrimSpace(pm))
+	if mode == "" {
+		mode = s.cfg.Plist.Mode
+	}
+	serverURL = strings.TrimRight(strings.TrimSpace(pu), "/")
+	if serverURL == "" {
+		serverURL = s.cfg.Plist.PlistServerURL
+	}
+	return mode, serverURL
+}
+
 // keepVersions returns the effective retention count for the public config:
 // the administrator setting wins over the config-file default.
 func (s *Server) keepVersions() int {
@@ -258,17 +293,18 @@ func (s *Server) keepVersions() int {
 
 func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
 	base := requestBaseURL(r)
+	mode, serverURL := s.effectivePlist()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site_title":      s.siteTitle(),
 		"version":         versionKey(),
 		"public_base_url": base,
-		"plist_mode":      s.gen.Mode(),
+		"plist_mode":      mode,
 		"keep_versions":   s.keepVersions(),
 		"default_source":  s.cfg.DefaultSourceURL,
 		"poll_minutes":    s.cfg.PollIntervalMinutes,
 		"zsign_path":      s.cfg.ZsignPath,
 		"https_required":  strings.HasPrefix(base, "https://"),
-		"plist_server":    s.cfg.Plist.PlistServerURL,
+		"plist_server":    serverURL,
 		"ipa_base_url":    base,
 		"uptime_seconds":  int64(time.Since(s.started).Seconds()),
 	})
@@ -976,8 +1012,8 @@ func (s *Server) installApps(w http.ResponseWriter, r *http.Request, u *store.Us
 			}
 			manifest := base + "/manifest/" + a.ID + ".plist"
 			installURL := plist.ItmsServicesURL(manifest, true)
-			if s.gen.Mode() == "plistserver" {
-				remote, err := plist.DirectManifestURL(s.cfg.Plist.PlistServerURL, p)
+			if mode, remoteBase := s.effectivePlist(); mode == "plistserver" {
+				remote, err := plist.DirectManifestURL(remoteBase, p)
 				if err != nil {
 					log.Printf("install apps: remote manifest for %s: %v", a.ID, err)
 				} else {
@@ -1081,8 +1117,9 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
 	if p.Name == "" {
 		p.Name = a.BundleID
 	}
-	if s.gen.Mode() == "plistserver" {
-		target, err := plist.DirectManifestURL(s.cfg.Plist.PlistServerURL, p)
+	mode, serverURL := s.effectivePlist()
+	if mode == "plistserver" {
+		target, err := plist.DirectManifestURL(serverURL, p)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -1133,14 +1170,16 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 // ---- settings centre ----
 
 type settingsPayload struct {
-	SiteTitle    string `json:"site_title"`
-	BarkEnabled  bool   `json:"bark_enabled"`
-	BarkServer   string `json:"bark_server"`
-	BarkKey      string `json:"bark_key"`
-	BarkSound    string `json:"bark_sound"`
-	BarkGroup    string `json:"bark_group"`
-	BarkURL      string `json:"bark_url"`
-	KeepVersions int    `json:"keep_versions"`
+	SiteTitle      string `json:"site_title"`
+	BarkEnabled    bool   `json:"bark_enabled"`
+	BarkServer     string `json:"bark_server"`
+	BarkKey        string `json:"bark_key"`
+	BarkSound      string `json:"bark_sound"`
+	BarkGroup      string `json:"bark_group"`
+	BarkURL        string `json:"bark_url"`
+	KeepVersions   int    `json:"keep_versions"`
+	PlistMode      string `json:"plist_mode"`
+	PlistServerURL string `json:"plist_server_url"`
 }
 
 func (s *Server) currentSettings() store.Settings {
@@ -1192,6 +1231,28 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request, u *store.U
 	bark.Group = strings.TrimSpace(p.BarkGroup)
 	bark.URL = strings.TrimSpace(p.BarkURL)
 
+	// Validate the administrator-only plist settings before any write. An empty
+	// mode means an older client omitted the field, so keep the stored value.
+	var plistMode, plistServer string
+	if u.Role == "admin" {
+		plistMode = strings.ToLower(strings.TrimSpace(p.PlistMode))
+		plistServer = strings.TrimRight(strings.TrimSpace(p.PlistServerURL), "/")
+		if plistMode != "" && plistMode != "builtin" && plistMode != "plistserver" {
+			writeError(w, http.StatusBadRequest, errors.New("plist 模式必须是 builtin 或 plistserver"))
+			return
+		}
+		if plistMode == "plistserver" {
+			if plistServer == "" {
+				writeError(w, http.StatusBadRequest, errors.New("远程 plist 服务地址不能为空"))
+				return
+			}
+			if err := source.ValidateURL(plistServer); err != nil {
+				writeError(w, http.StatusBadRequest, errors.New("远程 plist 服务地址必须是完整的 http(s) URL"))
+				return
+			}
+		}
+	}
+
 	if err := s.st.Update(func(d *store.Data) error {
 		if me := d.Users[u.ID]; me != nil {
 			me.Bark = bark
@@ -1214,6 +1275,10 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request, u *store.U
 			cfg := d.Settings
 			cfg.SiteTitle = title
 			cfg.KeepVersions = keep
+			if plistMode != "" {
+				cfg.PlistMode = plistMode
+				cfg.PlistServerURL = plistServer
+			}
 			cfg.UpdatedAt = time.Now()
 			d.Settings = cfg
 		}
@@ -1244,10 +1309,13 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request, u *store.U
 // Bark target plus the (admin-only) site settings they are allowed to see.
 func (s *Server) settingsView(u *store.User) map[string]any {
 	cfg := s.currentSettings()
+	mode, serverURL := s.effectivePlist()
 	view := map[string]any{
-		"site_title":    cfg.SiteTitle,
-		"keep_versions": cfg.KeepVersions,
-		"editable":      u.Role == "admin", // site-level settings (title, retention)
+		"site_title":       cfg.SiteTitle,
+		"keep_versions":    cfg.KeepVersions,
+		"editable":         u.Role == "admin", // site-level settings (title, retention, plist mode)
+		"plist_mode":       mode,
+		"plist_server_url": serverURL,
 	}
 	for k, v := range barkView(u) {
 		view[k] = v
