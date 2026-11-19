@@ -407,6 +407,21 @@ https://api.palera.in/genPlist?bundleid=<bundle id>&fetchurl=<URL 编码后的 I
 
 管理员可在「设置中心 → 安装清单模式」随时在内置生成与远程 `/genPlist` 之间切换，并填写远程服务地址。该设置保存在服务端数据仓库中，**优先于 `config.json` 的 `plist.mode`**：未设置时才回退到启动配置。切换立即生效，无需重启；`/healthz` 与公开配置中的 `plist_mode` 实时反映当前有效模式。默认使用内置模式，不依赖任何第三方服务。
 
+### 自建 /genPlist API（替代第三方服务）
+
+服务端提供一个公开、无状态的 `GET /genPlist` 端点，参数与第三方 `/genPlist` 服务（如 palera.in）完全兼容，可直接把原来指向第三方的调用改指本服务：
+
+```
+/genPlist?bundleid=<bundle id>&fetchurl=<URL 编码后的 IPA 地址>&name=<名称>&version=<版本>
+```
+
+- `bundleid`、`fetchurl`、`name` 任一为空返回 400；`name` 留空时回退为 `bundleid`。
+- 可选 `iconurl`（及 `fullsizeimageurl`）让图标进入 plist；仅给 `iconurl` 时自动用作 full-size 图。
+- 所有值均来自请求参数，**不查询本地产物库**；任意客户端无需先在本服务签名即可调用。
+- 该端点始终由内置生成器处理，**不受当前 plist 模式开关影响**——即使安装页正指向远程服务，它依然本地生成，因此可作为彻底的第三方替代。
+
+内置模式另有按产物生成的方式 `GET /manifest/{id}.plist`：IPA/图标地址由当前请求 Host 实时生成，供安装页使用。两者互补。
+
 ### HTTPS 要求（重要）
 
 iOS 的 OTA 安装要求 **manifest、IPA、图标 URL 全部通过受信任的 HTTPS 提供**。局域网 HTTP 地址通常可以生成链接，但设备会拒绝安装。生产部署请配置域名与证书（例如 Caddy 自动签发），并通过反向代理把 `X-Forwarded-Proto: https` 和 `X-Forwarded-Host` 传给本服务。

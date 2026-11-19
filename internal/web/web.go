@@ -215,6 +215,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/public/apps", s.auth.Require(s.installApps))
 	mux.HandleFunc("GET /install/manifest.webmanifest", s.installManifest)
 	mux.HandleFunc("GET /manifest/{id}", s.manifest)
+	mux.HandleFunc("GET /genPlist", s.genPlist) // public, stateless builtin plist API (palera.in-compatible)
 	mux.HandleFunc("GET /ipa/{id}", s.ipa)
 	mux.HandleFunc("GET /assets/{name}", s.asset)
 	return mux
@@ -1130,6 +1131,42 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
 	body, err := s.gen.Generate(r.Context(), p)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = io.WriteString(w, body)
+}
+
+// genPlist is a public, stateless plist API compatible with third-party
+// /genPlist services (e.g. palera.in). It accepts the same query parameters
+// (bundleid, fetchurl, name, version) and additionally supports iconurl and
+// fullsizeimageurl so icons can be embedded. Unlike /manifest/{id}.plist it
+// does not look up an artifact: every value comes from the request, so it can
+// be called by any client without signing through this server first.
+//
+// It always uses the builtin generator regardless of the configured plist
+// mode, so it remains available as a self-hosted replacement even while the
+// install page is pointed at a remote /genPlist service.
+func (s *Server) genPlist(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	p := plist.Params{
+		BundleID:         strings.TrimSpace(q.Get("bundleid")),
+		Name:             strings.TrimSpace(q.Get("name")),
+		Version:          strings.TrimSpace(q.Get("version")),
+		IPAURL:           strings.TrimSpace(q.Get("fetchurl")),
+		IconURL:          strings.TrimSpace(q.Get("iconurl")),
+		FullSizeImageURL: strings.TrimSpace(q.Get("fullsizeimageurl")),
+	}
+	if p.FullSizeImageURL == "" {
+		p.FullSizeImageURL = p.IconURL
+	}
+	if p.Name == "" {
+		p.Name = p.BundleID
+	}
+	body, err := s.gen.Generate(r.Context(), p)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")

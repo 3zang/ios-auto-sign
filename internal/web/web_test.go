@@ -664,3 +664,88 @@ func TestLocalManifestWorksAfterSwitchingToBuiltin(t *testing.T) {
 		t.Fatalf("manifest body is not a local plist: %s", rr.Body.String())
 	}
 }
+
+// /genPlist is a public, stateless plist API compatible with third-party
+// genPlist services: all values come from the query string, no artifact lookup.
+func TestGenPlistAPI(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	call := func(rawQuery string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/genPlist"+rawQuery, nil)
+		s.genPlist(rr, req)
+		return rr
+	}
+
+	// Full set of palera.in-compatible parameters plus optional icons.
+	rr := call("?bundleid=com.example.App&fetchurl=https%3A%2F%2Fcdn.example.com%2Fapp.ipa&name=My%20App&version=2.1&iconurl=https%3A%2F%2Fcdn.example.com%2Ficon.png")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<?xml") || !strings.Contains(body, "<plist") {
+		t.Fatalf("not a plist: %s", body)
+	}
+	for _, want := range []string{
+		"<string>com.example.App</string>",
+		"<string>2.1</string>",
+		"<string>My App</string>",
+		"https://cdn.example.com/app.ipa",
+		"software-package",
+		"display-image",
+		"https://cdn.example.com/icon.png",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("plist missing %q: %s", want, body)
+		}
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "application/xml") {
+		t.Errorf("Content-Type = %q", ct)
+	}
+
+	// name defaults to bundleid, as the builtin manifest path does.
+	rr = call("?bundleid=com.example.App&fetchurl=https%3A%2F%2Fcdn.example.com%2Fapp.ipa")
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "<string>com.example.App</string>") {
+		t.Fatalf("name fallback failed: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Missing required fields are rejected with 400, not a broken plist.
+	if rr := call("?fetchurl=https%3A%2F%2Fcdn.example.com%2Fapp.ipa"); rr.Code != http.StatusBadRequest {
+		t.Errorf("missing bundleid status = %d, want 400", rr.Code)
+	}
+	if rr := call("?bundleid=com.example.App"); rr.Code != http.StatusBadRequest {
+		t.Errorf("missing fetchurl status = %d, want 400", rr.Code)
+	}
+}
+
+// The public /genPlist API must stay builtin-backed even when the account's
+// active install mode is remote, so it can fully replace the third-party host.
+func TestGenPlistWorksInRemoteMode(t *testing.T) {
+	cfg := config.Default()
+	cfg.Plist.Mode = "plistserver"
+	cfg.Plist.PlistServerURL = "https://api.palera.in/genPlist"
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Update(func(d *store.Data) error {
+		d.Settings.PlistMode = "plistserver"
+		d.Settings.PlistServerURL = "https://api.palera.in/genPlist"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg, st, nil, nil, nil, nil, http.DefaultClient)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"http://localhost/genPlist?bundleid=com.x&fetchurl=https%3A%2F%2Fcdn.x%2Fa.ipa&name=X&version=1", nil)
+	s.genPlist(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "com.x") {
+		t.Fatalf("genPlist in remote mode = %d: %s", rr.Code, rr.Body.String())
+	}
+	// No redirect to the remote host: it is served locally.
+	if loc := rr.Header().Get("Location"); loc != "" {
+		t.Fatalf("unexpected redirect: %s", loc)
+	}
+}
