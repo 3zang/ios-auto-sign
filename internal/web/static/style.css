@@ -369,6 +369,11 @@ th { color: var(--text-secondary); font-weight: 600; white-space: nowrap; font-s
 tr:last-child td { border-bottom: none; }
 .mono { font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+/* Size each card by its own content. CSS Grid's default `align-items: stretch`
+   makes every card in a row as tall as the tallest one, so expanding the
+   "配置签名元数据" details on one card visibly stretches its neighbours (their
+   card-body is pushed down by margin-top:auto) as if they expanded too. */
+#panel-apps .card-grid { align-items: start; }
 .card {
   position: relative; padding: 22px; overflow: hidden;
   display: flex; flex-direction: column;
